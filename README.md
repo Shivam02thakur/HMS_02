@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # MediCare HMS - Hospital Management System
 
 A full-featured, production-ready Hospital Management System built with **React + Vite + TypeScript + Tailwind CSS** and **Supabase** backend.
@@ -168,3 +169,6 @@ npm run build
 ## License
 
 MIT License - Free for educational and commercial use.
+=======
+# HMS_02
+>>>>>>> e5cbd3a3966148daeac7913c65a82c515eb688ab
