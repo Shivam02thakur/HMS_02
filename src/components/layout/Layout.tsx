@@ -5,13 +5,14 @@ import { useRole } from '@/hooks/useRole';
 import {
   LayoutDashboard, Users, Stethoscope, CalendarDays, FileText,
   Pill, FlaskConical, Receipt, BedDouble, Settings, LogOut,
-  Menu, X, ChevronDown, ChevronRight, UserCircle
+  Menu, X, ChevronDown, ChevronRight, UserCircle, Building2
 } from 'lucide-react';
 
 const navItems = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin', 'receptionist', 'doctor', 'pharmacist', 'lab_technician'] },
   { path: '/patients', label: 'Patients', icon: Users, roles: ['admin', 'receptionist', 'doctor', 'pharmacist', 'lab_technician'] },
   { path: '/doctors', label: 'Doctors', icon: Stethoscope, roles: ['admin', 'receptionist', 'doctor'] },
+  { path: '/departments', label: 'Departments', icon: Building2, roles: ['admin', 'receptionist', 'doctor'] },
   { path: '/appointments', label: 'Appointments', icon: CalendarDays, roles: ['admin', 'receptionist', 'doctor'] },
   { path: '/prescriptions', label: 'Prescriptions', icon: FileText, roles: ['admin', 'doctor', 'pharmacist'] },
   { path: '/pharmacy', label: 'Pharmacy', icon: Pill, roles: ['admin', 'pharmacist'] },

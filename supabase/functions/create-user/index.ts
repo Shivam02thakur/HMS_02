@@ -112,6 +112,28 @@ Deno.serve(async (req) => {
       return json({ error: createError.message }, 400);
     }
 
+    if (!data.user) {
+      return json({ error: "User creation returned no user record." }, 500);
+    }
+
+    // Belt-and-suspenders: the handle_new_user() trigger is *supposed* to
+    // read role/created_by_admin from app_metadata at insert time and set
+    // it correctly on its own. In practice that hasn't been reliable, so
+    // rather than depend on trigger timing, explicitly set the role here —
+    // this client uses the service role key, which bypasses RLS entirely,
+    // so this update is guaranteed to apply regardless of what the trigger
+    // did or didn't do.
+    const { error: roleFixError } = await callerClient
+      .from("profiles")
+      .update({ role, full_name: fullName })
+      .eq("id", data.user.id);
+
+    if (roleFixError) {
+      return json({
+        error: `User account was created, but setting its role failed: ${roleFixError.message}. Fix it manually in the profiles table.`,
+      }, 500);
+    }
+
     return json({
       message: "User created successfully.",
       user: {

@@ -7,7 +7,7 @@ import { SearchInput } from '@/components/ui/SearchInput';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import type { Doctor, Department } from '@/types';
-import { Plus, Stethoscope, Eye, Trash2, Edit, Clock, IndianRupee } from 'lucide-react';
+import { Plus, Stethoscope, Eye, Power, Edit, Clock, IndianRupee } from 'lucide-react';
 import { formatCurrency, DAYS_OF_WEEK } from '@/lib/utils';
 import { useDebounce } from '@/hooks/useDebounce';
 
@@ -18,7 +18,8 @@ export function DoctorsPage() {
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingDoctor, setEditingDoctor] = useState<Doctor | null>(null);
-  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [toggleTarget, setToggleTarget] = useState<Doctor | null>(null);
+  const [departmentFilter, setDepartmentFilter] = useState('');
   const debouncedSearch = useDebounce(search, 300);
   const navigate = useNavigate();
   const { isAdmin } = useRole();
@@ -75,19 +76,24 @@ export function DoctorsPage() {
     fetchData();
   }
 
-  async function handleDelete() {
-    if (!deleteId) return;
-    await supabase.from('doctors').delete().eq('id', deleteId);
-    setDeleteId(null);
+  // Doctors are deactivated, never hard-deleted: appointments.doctor_id and
+  // prescriptions.doctor_id are ON DELETE CASCADE, so a real DELETE here would
+  // silently wipe every appointment/prescription this doctor ever had.
+  async function handleToggleActive() {
+    if (!toggleTarget) return;
+    await supabase.from('doctors').update({ is_active: !toggleTarget.is_active }).eq('id', toggleTarget.id);
+    setToggleTarget(null);
     fetchData();
   }
 
-  const filteredDoctors = doctors.filter(d =>
-    !debouncedSearch ||
-    d.full_name.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
-    d.specialization?.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
-    d.department?.name?.toLowerCase().includes(debouncedSearch.toLowerCase())
-  );
+  const filteredDoctors = doctors.filter(d => {
+    const matchesSearch = !debouncedSearch ||
+      d.full_name.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+      d.specialization?.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+      d.department?.name?.toLowerCase().includes(debouncedSearch.toLowerCase());
+    const matchesDepartment = !departmentFilter || d.department_id === departmentFilter;
+    return matchesSearch && matchesDepartment;
+  });
 
   return (
     <div className="space-y-6">
@@ -104,12 +110,17 @@ export function DoctorsPage() {
       </div>
 
       <div className="card">
-        <div className="mb-4">
-          <SearchInput value={search} onChange={setSearch} placeholder="Search doctors..." />
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="flex-1"><SearchInput value={search} onChange={setSearch} placeholder="Search doctors..." /></div>
+          <select value={departmentFilter} onChange={e => setDepartmentFilter(e.target.value)} className="input w-auto">
+            <option value="">All Departments</option>
+            {departments.map(d => <option key={d.id} value={d.id}>{d.name}{!d.is_active ? ' (Inactive)' : ''}</option>)}
+          </select>
         </div>
 
         {loading ? <div className="py-12 text-center">Loading...</div> :
-        filteredDoctors.length === 0 ? <EmptyState title="No doctors found" /> : (
+        doctors.length === 0 ? <EmptyState title="No doctors found" description="Add a doctor first." /> :
+        filteredDoctors.length === 0 ? <EmptyState title="No doctors match your search/filter" /> : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {filteredDoctors.map((d) => (
               <div key={d.id} className="rounded-xl border border-gray-200 bg-white p-5 hover:shadow-md transition-shadow">
@@ -126,8 +137,8 @@ export function DoctorsPage() {
                         <button onClick={() => openModal(d)} className="p-1.5 text-gray-400 hover:text-blue-600 rounded-lg hover:bg-gray-50">
                           <Edit className="h-4 w-4" />
                         </button>
-                        <button onClick={() => setDeleteId(d.id)} className="p-1.5 text-gray-400 hover:text-red-600 rounded-lg hover:bg-gray-50">
-                          <Trash2 className="h-4 w-4" />
+                        <button onClick={() => setToggleTarget(d)} className={`p-1.5 rounded-lg hover:bg-gray-50 ${d.is_active ? 'text-gray-400 hover:text-red-600' : 'text-gray-400 hover:text-green-600'}`} title={d.is_active ? 'Deactivate' : 'Activate'}>
+                          <Power className="h-4 w-4" />
                         </button>
                       </>
                     )}
@@ -166,8 +177,9 @@ export function DoctorsPage() {
               <label className="label">Department</label>
               <select value={form.department_id} onChange={e => setForm({...form, department_id: e.target.value})} className="input">
                 <option value="">Select Department</option>
-                {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                {departments.map(d => <option key={d.id} value={d.id}>{d.name}{!d.is_active ? ' (Inactive)' : ''}</option>)}
               </select>
+              {departments.length === 0 && <p className="mt-1 text-xs text-red-500">No departments found. Add a department first.</p>}
             </div>
             <div><label className="label">Specialization</label><input value={form.specialization} onChange={e => setForm({...form, specialization: e.target.value})} className="input" /></div>
             <div><label className="label">Consultation Fee (₹)</label><input type="number" value={form.consultation_fee} onChange={e => setForm({...form, consultation_fee: e.target.value})} className="input" /></div>
@@ -199,7 +211,17 @@ export function DoctorsPage() {
         </form>
       </Modal>
 
-      <ConfirmDialog isOpen={!!deleteId} onClose={() => setDeleteId(null)} onConfirm={handleDelete} title="Delete Doctor" message="Are you sure?" isDanger />
+      <ConfirmDialog
+        isOpen={!!toggleTarget}
+        onClose={() => setToggleTarget(null)}
+        onConfirm={handleToggleActive}
+        title={toggleTarget?.is_active ? 'Deactivate Doctor' : 'Activate Doctor'}
+        message={toggleTarget?.is_active
+          ? `Deactivate Dr. ${toggleTarget?.full_name}? Their appointment/prescription history is kept, they just won't be selectable for new bookings.`
+          : `Activate Dr. ${toggleTarget?.full_name} again?`}
+        confirmText={toggleTarget?.is_active ? 'Deactivate' : 'Activate'}
+        isDanger={toggleTarget?.is_active}
+      />
     </div>
   );
 }
