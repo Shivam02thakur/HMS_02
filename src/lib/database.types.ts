@@ -40,15 +40,18 @@ export interface Database {
           id: string;
           name: string;
           description?: string;
+          is_active: boolean;
           created_at: string;
         };
         Insert: {
           name: string;
           description?: string;
+          is_active?: boolean;
         };
         Update: {
           name?: string;
           description?: string;
+          is_active?: boolean;
         };
         Relationships: [];
       };
