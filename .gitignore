@@ -30,3 +30,7 @@ pnpm-debug.log*
 # Supabase local dev
 supabase/.branches
 supabase/.temp
+
+
+# Patch files
+HMS_batch1.patch
