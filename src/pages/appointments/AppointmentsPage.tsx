@@ -5,7 +5,7 @@ import { useRole } from '@/hooks/useRole';
 import { Modal } from '@/components/ui/Modal';
 import { SearchInput } from '@/components/ui/SearchInput';
 import { EmptyState } from '@/components/ui/EmptyState';
-import type { Appointment, Patient, Doctor } from '@/types';
+import type { Appointment, Patient, Doctor, Department } from '@/types';
 import { Plus, User, Stethoscope, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 import { formatDate, formatTime, getStatusColor, TIME_SLOTS } from '@/lib/utils';
 import { useDebounce } from '@/hooks/useDebounce';
@@ -14,6 +14,9 @@ export function AppointmentsPage() {
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [bookedTimes, setBookedTimes] = useState<string[]>([]);
+  const [formError, setFormError] = useState('');
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
@@ -24,7 +27,7 @@ export function AppointmentsPage() {
   const { user } = useAuth();
   const { isReceptionist, isDoctor } = useRole();
 
-  const [form, setForm] = useState({ patient_id: '', doctor_id: '', appointment_date: '', appointment_time: '', notes: '' });
+  const [form, setForm] = useState({ department_id: '', patient_id: '', doctor_id: '', appointment_date: '', appointment_time: '', notes: '' });
 
   useEffect(() => { fetchData(); }, [debouncedSearch, filterDate]);
 
@@ -42,20 +45,58 @@ export function AppointmentsPage() {
     }
     setAppointments(filtered);
 
-    const [{ data: p }, { data: d }] = await Promise.all([
+    const [{ data: p }, { data: d }, { data: dept }] = await Promise.all([
       supabase.from('patients').select('id, full_name').order('full_name'),
-      supabase.from('doctors').select('id, full_name, available_days, available_time_start, available_time_end').eq('is_active', true).order('full_name')
+      supabase.from('doctors').select('id, full_name, department_id, available_days, available_time_start, available_time_end').eq('is_active', true).order('full_name'),
+      supabase.from('departments').select('id, name').eq('is_active', true).order('name')
     ]);
     setPatients((p || []) as unknown as Patient[]);
     setDoctors((d || []) as unknown as Doctor[]);
+    setDepartments((dept || []) as unknown as Department[]);
     setLoading(false);
   }
 
+  // Re-fetch which slots are already taken every time the doctor or date
+  // changes, so the dropdown reflects reality. This is a UX convenience only
+  // (it narrows what's shown) — the actual guard against double-booking is
+  // the unique index added in migration 006; see handleSubmit's catch block.
+  useEffect(() => {
+    async function fetchBookedTimes() {
+      if (!form.doctor_id || !form.appointment_date) { setBookedTimes([]); return; }
+      const { data } = await supabase.from('appointments')
+        .select('appointment_time')
+        .eq('doctor_id', form.doctor_id)
+        .eq('appointment_date', form.appointment_date)
+        .in('status', ['BOOKED', 'COMPLETED']);
+      setBookedTimes((data || []).map((a: { appointment_time: string }) => a.appointment_time));
+    }
+    fetchBookedTimes();
+  }, [form.doctor_id, form.appointment_date]);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    await supabase.from('appointments').insert({ ...form, created_by: user?.id });
+    setFormError('');
+    const { department_id, ...payload } = form; // department_id is UI-only, not a column on appointments
+    const { error } = await supabase.from('appointments').insert({ ...payload, created_by: user?.id });
+    if (error) {
+      // 23505 = unique_violation. Two people raced for the same doctor/date/time
+      // and the DB-level unique index from migration 006 caught it. This should
+      // be rare (the dropdown already hides taken slots) but is the actual
+      // guarantee, not the UI filtering.
+      if (error.code === '23505') {
+        setFormError('That slot was just booked by someone else. Pick another time.');
+        const { data } = await supabase.from('appointments').select('appointment_time')
+          .eq('doctor_id', form.doctor_id).eq('appointment_date', form.appointment_date)
+          .in('status', ['BOOKED', 'COMPLETED']);
+        setBookedTimes((data || []).map((a: { appointment_time: string }) => a.appointment_time));
+        setForm(f => ({ ...f, appointment_time: '' }));
+      } else {
+        setFormError('Could not book the appointment. Please try again.');
+      }
+      return;
+    }
     setShowModal(false);
-    setForm({ patient_id: '', doctor_id: '', appointment_date: '', appointment_time: '', notes: '' });
+    setForm({ department_id: '', patient_id: '', doctor_id: '', appointment_date: '', appointment_time: '', notes: '' });
     fetchData();
   }
 
@@ -69,20 +110,26 @@ export function AppointmentsPage() {
     setShowCompleteModal(true);
   }
 
-  const getAvailableSlots = () => {
-    if (!form.doctor_id || !form.appointment_date) return TIME_SLOTS;
+  function getSlotInfo(): { slots: string[]; reason: string | null } {
+    if (!form.doctor_id || !form.appointment_date) return { slots: [], reason: null };
     const doctor = doctors.find(d => d.id === form.doctor_id);
-    if (!doctor) return TIME_SLOTS;
+    if (!doctor) return { slots: [], reason: null };
     const dayName = new Date(form.appointment_date).toLocaleDateString('en-US', { weekday: 'long' });
-    if (!doctor.available_days?.includes(dayName)) return [];
+    if (!doctor.available_days?.includes(dayName)) {
+      return { slots: [], reason: 'Doctor is not available on this day.' };
+    }
     const start = doctor.available_time_start;
     const end = doctor.available_time_end;
-    return TIME_SLOTS.filter(slot => {
+    const slots = TIME_SLOTS.filter(slot => {
       if (start && slot < start) return false;
       if (end && slot > end) return false;
+      if (bookedTimes.includes(slot)) return false; // already taken for this doctor/date
       return true;
     });
-  };
+    return { slots, reason: slots.length === 0 ? 'Fully booked — no open slots left for this date.' : null };
+  }
+
+  const filteredDoctorsForBooking = form.department_id ? doctors.filter(d => d.department_id === form.department_id) : doctors;
 
   return (
     <div className="space-y-6">
@@ -164,7 +211,7 @@ export function AppointmentsPage() {
         )}
       </div>
 
-      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Book Appointment">
+      <Modal isOpen={showModal} onClose={() => { setShowModal(false); setFormError(''); }} title="Book Appointment">
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="label">Patient *</label>
@@ -174,11 +221,23 @@ export function AppointmentsPage() {
             </select>
           </div>
           <div>
+            <label className="label">Department</label>
+            <select value={form.department_id} onChange={e => setForm({...form, department_id: e.target.value, doctor_id: '', appointment_time: ''})} className="input">
+              <option value="">All Departments</option>
+              {departments.map(dep => <option key={dep.id} value={dep.id}>{dep.name}</option>)}
+            </select>
+            {departments.length === 0 && <p className="mt-1 text-xs text-red-500">No departments found.</p>}
+          </div>
+          <div>
             <label className="label">Doctor *</label>
             <select required value={form.doctor_id} onChange={e => setForm({...form, doctor_id: e.target.value, appointment_time: ''})} className="input">
               <option value="">Select Doctor</option>
-              {doctors.map(d => <option key={d.id} value={d.id}>Dr. {d.full_name}</option>)}
+              {filteredDoctorsForBooking.map(d => <option key={d.id} value={d.id}>Dr. {d.full_name}</option>)}
             </select>
+            {doctors.length === 0 && <p className="mt-1 text-xs text-red-500">No doctors found. Add a doctor first.</p>}
+            {doctors.length > 0 && filteredDoctorsForBooking.length === 0 && (
+              <p className="mt-1 text-xs text-red-500">No doctors in this department.</p>
+            )}
           </div>
           <div>
             <label className="label">Date *</label>
@@ -186,20 +245,21 @@ export function AppointmentsPage() {
           </div>
           <div>
             <label className="label">Time Slot *</label>
-            <select required value={form.appointment_time} onChange={e => setForm({...form, appointment_time: e.target.value})} className="input">
-              <option value="">Select Time</option>
-              {getAvailableSlots().map(t => <option key={t} value={t}>{formatTime(t)}</option>)}
+            <select required value={form.appointment_time} onChange={e => setForm({...form, appointment_time: e.target.value})} className="input" disabled={!form.doctor_id || !form.appointment_date}>
+              <option value="">{!form.doctor_id || !form.appointment_date ? 'Select doctor and date first' : 'Select Time'}</option>
+              {getSlotInfo().slots.map(t => <option key={t} value={t}>{formatTime(t)}</option>)}
             </select>
-            {form.doctor_id && form.appointment_date && getAvailableSlots().length === 0 && (
-              <p className="mt-1 text-xs text-red-500">Doctor not available on this day</p>
+            {getSlotInfo().reason && (
+              <p className="mt-1 text-xs text-red-500">{getSlotInfo().reason}</p>
             )}
           </div>
           <div>
             <label className="label">Notes</label>
             <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} className="input" rows={2} />
           </div>
+          {formError && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{formError}</p>}
           <div className="flex justify-end gap-3">
-            <button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>
+            <button type="button" onClick={() => { setShowModal(false); setFormError(''); }} className="btn-secondary">Cancel</button>
             <button type="submit" className="btn-primary">Book Appointment</button>
           </div>
         </form>
