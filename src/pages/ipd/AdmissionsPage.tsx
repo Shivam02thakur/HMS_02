@@ -22,6 +22,7 @@ export function AdmissionsPage() {
   const [showModal, setShowModal] = useState(false);
   const [showDischargeModal, setShowDischargeModal] = useState(false);
   const [selectedAdmission, setSelectedAdmission] = useState<Admission | null>(null);
+  const [formError, setFormError] = useState('');
   const debouncedSearch = useDebounce(search, 300);
   const { isReceptionist } = useRole();
   const navigate = useNavigate();
@@ -60,7 +61,7 @@ export function AdmissionsPage() {
 
     const [{ data: p }, { data: d }, { data: dep }, { data: w }] = await Promise.all([
     supabase.from('patients').select('id, full_name, admissions!left(status)').order('full_name'),
-    supabase.from('doctors').select('id, full_name').eq('is_active', true).order('full_name'),
+    supabase.from('doctors').select('id, full_name, department_id').eq('is_active', true).order('full_name'),
     supabase.from('departments').select('id, name').eq('is_active', true).order('name'),
     supabase.from('wards').select('id, name, ward_type, capacity').order('name')
   ]);
@@ -82,7 +83,8 @@ export function AdmissionsPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    await supabase.from('admissions').insert({
+    setFormError('');
+    const { error } = await supabase.from('admissions').insert({
       patient_id: form.patient_id,
       doctor_id: form.doctor_id || undefined,
       bed_id: form.bed_id || undefined,
@@ -90,6 +92,15 @@ export function AdmissionsPage() {
       notes: form.notes,
       status: 'ADMITTED'
     });
+    if (error) {
+      if (error.code === '23505') {
+        setFormError('That bed or patient was just taken by another admission. Refresh and pick again.');
+      } else {
+        setFormError('Could not admit patient. Please try again.');
+      }
+      console.error(error);
+      return;
+    }
     setShowModal(false);
     setForm({ patient_id: '', doctor_id: '', ward_id: '', room_id: '', bed_id: '', diagnosis: '', notes: '', department_id: '' });
     fetchData();
@@ -97,7 +108,15 @@ export function AdmissionsPage() {
 
   async function handleDischarge() {
     if (!selectedAdmission) return;
-    await supabase.from('admissions').update({ status: 'DISCHARGED', discharge_date: new Date().toISOString() }).eq('id', selectedAdmission.id);
+    setFormError('');
+    const { error } = await supabase.from('admissions')
+      .update({ status: 'DISCHARGED', discharge_date: new Date().toISOString() })
+      .eq('id', selectedAdmission.id);
+    if (error) {
+      setFormError('Could not discharge patient. Please try again.');
+      console.error(error);
+      return;
+    }
     setShowDischargeModal(false);
     setSelectedAdmission(null);
     fetchData();
@@ -242,8 +261,9 @@ export function AdmissionsPage() {
             <label className="label">Notes</label>
             <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} className="input" rows={2} />
           </div>
+          {formError && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{formError}</p>}
           <div className="flex justify-end gap-3">
-            <button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>
+            <button type="button" onClick={() => { setShowModal(false); setFormError(''); }} className="btn-secondary">Cancel</button>
             <button type="submit" className="btn-primary" disabled={!form.doctor_id || !form.bed_id}>Admit Patient</button>
           </div>
         </form>
