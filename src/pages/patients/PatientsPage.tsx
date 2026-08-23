@@ -38,7 +38,7 @@ export function PatientsPage() {
       query = query.or(`full_name.ilike.%${debouncedSearch}%,patient_code.ilike.%${debouncedSearch}%,phone.ilike.%${debouncedSearch}%`);
     }
     const { data } = await query;
-    setPatients(data || []);
+    setPatients((data || []) as unknown as Patient[]);
     setLoading(false);
   }
 
@@ -67,11 +67,26 @@ export function PatientsPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const payload = { ...form, gender: (form.gender || undefined) as 'male' | 'female' | 'other' | undefined };
+    const payload = {
+      ...form,
+      email: form.email || null,
+      date_of_birth: form.date_of_birth || null,
+      gender: (form.gender || null) as 'male' | 'female' | 'other' | null,
+      blood_group: form.blood_group || null,
+      address: form.address || null,
+      emergency_contact_name: form.emergency_contact_name || null,
+      emergency_contact_phone: form.emergency_contact_phone || null,
+      allergies: form.allergies || null,
+      medical_history: form.medical_history || null,
+    };
     if (editingPatient) {
-      await supabase.from('patients').update(payload).eq('id', editingPatient.id);
+      const { error } = await supabase.from('patients').update(payload).eq('id', editingPatient.id);
+      if (error) { console.error(error); return; }
     } else {
-      await supabase.from('patients').insert(payload);
+      // patient_code is generated server-side by the set_patient_code trigger (003_functions.sql) —
+      // the generated Insert type doesn't know that, so it's asserted here rather than provided.
+      const { error } = await supabase.from('patients').insert(payload as unknown as typeof payload & { patient_code: string });
+      if (error) { console.error(error); return; }
     }
     setShowModal(false);
     fetchPatients();
@@ -143,7 +158,7 @@ export function PatientsPage() {
                     <td className="table-cell">
                       {p.blood_group ? <span className="badge bg-red-50 text-red-700">{p.blood_group}</span> : '-'}
                     </td>
-                    <td className="table-cell text-gray-500">{formatDate(p.created_at)}</td>
+                    <td className="table-cell text-gray-500">{p.created_at ? formatDate(p.created_at) : '-'}</td>
                     <td className="table-cell text-right">
                       <div className="flex items-center justify-end gap-2">
                         <button onClick={() => navigate(`/patients/${p.id}`)} className="p-1 text-gray-400 hover:text-primary-600">
