@@ -26,7 +26,7 @@ export function IPDPage() {
       supabase.from('beds').select('*, ward:wards(name, ward_type)').order('bed_number'),
       supabase.from('admissions').select('*, patient:patients(full_name), bed:beds(bed_number, ward:wards(name))').eq('status', 'ADMITTED').order('admission_date')
     ]);
-    setWards(w || []);
+    setWards((w || []) as unknown as Ward[]);
     setBeds((b || []) as unknown as Bed[]);
     setAdmissions((a || []) as unknown as Admission[]);
     setLoading(false);

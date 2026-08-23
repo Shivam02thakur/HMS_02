@@ -12,9 +12,9 @@ export interface Profile {
 export interface Department {
   id: string;
   name: string;
-  description?: string;
+  description?: string | null;
   is_active: boolean;
-  created_at: string;
+  created_at: string | null;
 }
 
 export interface Doctor {
@@ -39,17 +39,17 @@ export interface Patient {
   id: string;
   patient_code: string;
   full_name: string;
-  email?: string;
+  email?: string | null;
   phone: string;
-  date_of_birth?: string;
-  gender?: 'male' | 'female' | 'other';
-  blood_group?: string;
-  address?: string;
-  emergency_contact_name?: string;
-  emergency_contact_phone?: string;
-  allergies?: string;
-  medical_history?: string;
-  created_at: string;
+  date_of_birth?: string | null;
+  gender?: 'male' | 'female' | 'other' | null;
+  blood_group?: string | null;
+  address?: string | null;
+  emergency_contact_name?: string | null;
+  emergency_contact_phone?: string | null;
+  allergies?: string | null;
+  medical_history?: string | null;
+  created_at: string | null;
 }
 
 export type AppointmentStatus = 'BOOKED' | 'COMPLETED' | 'CANCELLED' | 'NO_SHOW';
@@ -66,6 +66,13 @@ export interface Appointment {
   created_at: string;
   patient?: Patient;
   doctor?: Doctor;
+}
+
+export interface Room {
+  id: string;
+  ward_id: string;
+  room_number: string;
+  is_active: boolean;
 }
 
 export interface Ward {
@@ -85,6 +92,7 @@ export interface Bed {
   status: BedStatus;
   created_at: string;
   ward?: Ward;
+  room?: { id: string; room_number: string };
 }
 
 export type AdmissionStatus = 'ADMITTED' | 'DISCHARGED';
@@ -108,14 +116,14 @@ export interface Admission {
 export interface Medicine {
   id: string;
   name: string;
-  generic_name?: string;
-  category?: string;
-  manufacturer?: string;
+  generic_name?: string | null;
+  category?: string | null;
+  manufacturer?: string | null;
   stock_quantity: number;
   reorder_level: number;
   unit_price: number;
-  expiry_date?: string;
-  created_at: string;
+  expiry_date?: string | null;
+  created_at: string | null;
 }
 
 export interface Prescription {
@@ -146,12 +154,12 @@ export interface PrescriptionItem {
 export interface LabTest {
   id: string;
   name: string;
-  code?: string;
-  description?: string;
-  normal_range?: string;
-  unit?: string;
+  code?: string | null;
+  description?: string | null;
+  normal_range?: string | null;
+  unit?: string | null;
   price: number;
-  created_at: string;
+  created_at: string | null;
 }
 
 export type LabOrderStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
@@ -187,15 +195,15 @@ export type InvoiceStatus = 'PENDING' | 'PARTIAL' | 'PAID';
 export interface Invoice {
   id: string;
   patient_id: string;
-  invoice_number?: string;
+  invoice_number?: string | null;
   invoice_date: string;
   subtotal: number;
   discount: number;
   total_amount: number;
   paid_amount: number;
   status: InvoiceStatus;
-  notes?: string;
-  created_by?: string;
+  notes?: string | null;
+  created_by?: string | null;
   created_at: string;
   patient?: Patient;
   items?: InvoiceItem[];
