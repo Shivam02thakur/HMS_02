@@ -4,7 +4,7 @@ import { useRole } from '@/hooks/useRole';
 import { Modal } from '@/components/ui/Modal';
 import { SearchInput } from '@/components/ui/SearchInput';
 import { EmptyState } from '@/components/ui/EmptyState';
-import type { Admission, Patient, Doctor, Bed, Ward, Room } from '@/types';
+import type { Admission, Patient, Doctor, Bed, Ward, Room, Department } from '@/types';
 import { Plus, ArrowLeft } from 'lucide-react';
 import { formatDate, getStatusColor } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
@@ -25,9 +25,10 @@ export function AdmissionsPage() {
   const debouncedSearch = useDebounce(search, 300);
   const { isReceptionist } = useRole();
   const navigate = useNavigate();
+  const [departments, setDepartments] = useState<Department[]>([]);
 
   const [form, setForm] = useState({
-    patient_id: '', doctor_id: '', ward_id: '', room_id: '', bed_id: '', diagnosis: '', notes: ''
+    department_id: '', patient_id: '', doctor_id: '', ward_id: '', room_id: '', bed_id: '', diagnosis: '', notes: ''
   });
 
   useEffect(() => { fetchData(); }, [debouncedSearch]);
@@ -57,12 +58,10 @@ export function AdmissionsPage() {
     }
     setAdmissions(filtered);
 
-    const [{ data: p }, { data: d }, { data: w }] = await Promise.all([
-    supabase
-      .from('patients')
-      .select('id, full_name, admissions!left(status)')
-      .order('full_name'),
+    const [{ data: p }, { data: d }, { data: dep }, { data: w }] = await Promise.all([
+    supabase.from('patients').select('id, full_name, admissions!left(status)').order('full_name'),
     supabase.from('doctors').select('id, full_name').eq('is_active', true).order('full_name'),
+    supabase.from('departments').select('id, name').eq('is_active', true).order('name'),
     supabase.from('wards').select('id, name, ward_type, capacity').order('name')
   ]);
 
@@ -72,9 +71,14 @@ export function AdmissionsPage() {
 
     setPatients(availablePatients as unknown as Patient[]);
     setDoctors((d || []) as unknown as Doctor[]);
+    setDepartments((dep || []) as unknown as Department[]);
     setWards((w || []) as unknown as Ward[]);
     setLoading(false);
   }
+
+  const filteredDoctorsForAdmission = form.department_id
+  ? doctors.filter(d => d.department_id === form.department_id)
+  : doctors;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -87,7 +91,7 @@ export function AdmissionsPage() {
       status: 'ADMITTED'
     });
     setShowModal(false);
-    setForm({ patient_id: '', doctor_id: '', ward_id: '', room_id: '', bed_id: '', diagnosis: '', notes: '' });
+    setForm({ patient_id: '', doctor_id: '', ward_id: '', room_id: '', bed_id: '', diagnosis: '', notes: '', department_id: '' });
     fetchData();
   }
 
@@ -100,7 +104,7 @@ export function AdmissionsPage() {
   }
 
   function openAdmitModal() {
-    setForm({ patient_id: '', doctor_id: '', ward_id: '', room_id: '', bed_id: '', diagnosis: '', notes: '' });
+    setForm({ patient_id: '', doctor_id: '', ward_id: '', room_id: '', bed_id: '', diagnosis: '', notes: '', department_id: '' });
     setShowModal(true);
   }
 
@@ -175,12 +179,26 @@ export function AdmissionsPage() {
               {patients.map(p => <option key={p.id} value={p.id}>{p.full_name}</option>)}
             </select>
           </div>
+
           <div>
-            <label className="label">Doctor</label>
-            <select value={form.doctor_id} onChange={e => setForm({...form, doctor_id: e.target.value})} className="input">
-              <option value="">Select Doctor</option>
-              {doctors.map(d => <option key={d.id} value={d.id}>Dr. {d.full_name}</option>)}
+            <label className="label">Department *</label>
+            <select required value={form.department_id}
+              onChange={e => setForm({...form, department_id: e.target.value, doctor_id: ''})}
+              className="input">
+              <option value="">Select Department</option>
+              {departments.map(dep => <option key={dep.id} value={dep.id}>{dep.name}</option>)}
             </select>
+            {departments.length === 0 && <p className="mt-1 text-xs text-red-500">No departments found.</p>}
+          </div>
+          <div>
+            <label className="label">Doctor *</label>
+            <select required disabled={!form.department_id} value={form.doctor_id}
+              onChange={e => setForm({...form, doctor_id: e.target.value})}
+              className="input">
+              <option value="">{form.department_id ? 'Select Doctor' : 'Select a department first'}</option>
+              {filteredDoctorsForAdmission.map(d => <option key={d.id} value={d.id}>Dr. {d.full_name}</option>)}
+            </select>
+            {form.department_id && filteredDoctorsForAdmission.length === 0 && <p className="mt-1 text-xs text-red-500">No doctors in this department.</p>}
           </div>
 
           <div>
@@ -226,7 +244,7 @@ export function AdmissionsPage() {
           </div>
           <div className="flex justify-end gap-3">
             <button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>
-            <button type="submit" className="btn-primary" disabled={!form.bed_id}>Admit Patient</button>
+            <button type="submit" className="btn-primary" disabled={!form.doctor_id || !form.bed_id}>Admit Patient</button>
           </div>
         </form>
       </Modal>
