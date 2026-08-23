@@ -57,12 +57,20 @@ export function AdmissionsPage() {
     }
     setAdmissions(filtered);
 
-    const [{ data: p }, { data: d }, { data: b }] = await Promise.all([
-      supabase.from('patients').select('id, full_name').order('full_name'),
-      supabase.from('doctors').select('id, full_name').eq('is_active', true).order('full_name'),
-      supabase.from('beds').select('*, ward:wards(name)').eq('status', 'VACANT').order('bed_number')
-    ]);
-    setPatients((p || []) as unknown as Patient[]);
+    const [{ data: p }, { data: d }, { data: w }] = await Promise.all([
+    supabase
+      .from('patients')
+      .select('id, full_name, admissions!left(status)')
+      .order('full_name'),
+    supabase.from('doctors').select('id, full_name').eq('is_active', true).order('full_name'),
+    supabase.from('wards').select('id, name, ward_type, capacity').order('name')
+  ]);
+
+    const availablePatients = (p || []).filter(
+      (pt: any) => !pt.admissions?.some((a: any) => a.status === 'ADMITTED')
+    );
+
+    setPatients(availablePatients as unknown as Patient[]);
     setDoctors((d || []) as unknown as Doctor[]);
     setVacantBeds((b || []) as unknown as Bed[]);
     setLoading(false);
