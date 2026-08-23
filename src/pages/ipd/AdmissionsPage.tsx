@@ -72,7 +72,7 @@ export function AdmissionsPage() {
 
     setPatients(availablePatients as unknown as Patient[]);
     setDoctors((d || []) as unknown as Doctor[]);
-    setVacantBeds((b || []) as unknown as Bed[]);
+    setWards((w || []) as unknown as Ward[]);
     setLoading(false);
   }
 
