@@ -4,7 +4,7 @@ import { useRole } from '@/hooks/useRole';
 import { Modal } from '@/components/ui/Modal';
 import { SearchInput } from '@/components/ui/SearchInput';
 import { EmptyState } from '@/components/ui/EmptyState';
-import type { Admission, Patient, Doctor, Bed } from '@/types';
+import type { Admission, Patient, Doctor, Bed, Ward, Room } from '@/types';
 import { Plus, ArrowLeft } from 'lucide-react';
 import { formatDate, getStatusColor } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
@@ -14,6 +14,8 @@ export function AdmissionsPage() {
   const [admissions, setAdmissions] = useState<Admission[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
+  const [wards, setWards] = useState<Ward[]>([]);
+  const [rooms, setRooms] = useState<Room[]>([]);
   const [vacantBeds, setVacantBeds] = useState<Bed[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -24,13 +26,30 @@ export function AdmissionsPage() {
   const { isReceptionist } = useRole();
   const navigate = useNavigate();
 
-  const [form, setForm] = useState({ patient_id: '', doctor_id: '', bed_id: '', diagnosis: '', notes: '' });
+  const [form, setForm] = useState({
+    patient_id: '', doctor_id: '', ward_id: '', room_id: '', bed_id: '', diagnosis: '', notes: ''
+  });
 
   useEffect(() => { fetchData(); }, [debouncedSearch]);
 
+  // Rooms load whenever the selected ward changes
+  useEffect(() => {
+    if (!form.ward_id) { setRooms([]); return; }
+    supabase.from('rooms').select('*').eq('ward_id', form.ward_id).eq('is_active', true)
+      .order('room_number').then(({ data }) => setRooms((data || []) as unknown as Room[]));
+  }, [form.ward_id]);
+
+  // Vacant beds load whenever the selected room changes
+  useEffect(() => {
+    if (!form.room_id) { setVacantBeds([]); return; }
+    supabase.from('beds').select('*, room:rooms(room_number), ward:wards(name)')
+      .eq('room_id', form.room_id).eq('status', 'VACANT').order('bed_number')
+      .then(({ data }) => setVacantBeds((data || []) as unknown as Bed[]));
+  }, [form.room_id]);
+
   async function fetchData() {
     setLoading(true);
-    let query = supabase.from('admissions').select('*, patient:patients(full_name), doctor:doctors(full_name), bed:beds(bed_number, ward:wards(name))').order('admission_date', { ascending: false });
+    let query = supabase.from('admissions').select('*, patient:patients(full_name), doctor:doctors(full_name), bed:beds(bed_number, room:rooms(room_number), ward:wards(name))').order('admission_date', { ascending: false });
     const { data } = await query;
     let filtered = (data || []) as unknown as Admission[];
     if (debouncedSearch) {
@@ -60,7 +79,7 @@ export function AdmissionsPage() {
       status: 'ADMITTED'
     });
     setShowModal(false);
-    setForm({ patient_id: '', doctor_id: '', bed_id: '', diagnosis: '', notes: '' });
+    setForm({ patient_id: '', doctor_id: '', ward_id: '', room_id: '', bed_id: '', diagnosis: '', notes: '' });
     fetchData();
   }
 
@@ -102,7 +121,7 @@ export function AdmissionsPage() {
               <thead>
                 <tr>
                   <th className="table-header">Patient</th>
-                  <th className="table-header">Ward / Bed</th>
+                  <th className="table-header">Ward / Room / Bed</th>
                   <th className="table-header">Doctor</th>
                   <th className="table-header">Diagnosis</th>
                   <th className="table-header">Status</th>
@@ -114,7 +133,7 @@ export function AdmissionsPage() {
                 {admissions.map(a => (
                   <tr key={a.id} className="hover:bg-gray-50">
                     <td className="table-cell font-medium">{a.patient?.full_name}</td>
-                    <td className="table-cell">{a.bed?.ward?.name} - {a.bed?.bed_number}</td>
+                    <td className="table-cell">{a.bed?.ward?.name} / {a.bed?.room?.room_number} - {a.bed?.bed_number}</td>
                     <td className="table-cell">Dr. {a.doctor?.full_name}</td>
                     <td className="table-cell">{a.diagnosis || '-'}</td>
                     <td className="table-cell"><span className={`badge ${getStatusColor(a.status)}`}>{a.status}</span></td>
@@ -150,14 +169,40 @@ export function AdmissionsPage() {
               {doctors.map(d => <option key={d.id} value={d.id}>Dr. {d.full_name}</option>)}
             </select>
           </div>
+
+          <div>
+            <label className="label">Ward *</label>
+            <select required value={form.ward_id}
+              onChange={e => setForm({...form, ward_id: e.target.value, room_id: '', bed_id: ''})}
+              className="input">
+              <option value="">Select Ward</option>
+              {wards.map(w => <option key={w.id} value={w.id}>{w.name} ({w.ward_type})</option>)}
+            </select>
+            {wards.length === 0 && <p className="mt-1 text-xs text-red-500">No wards found.</p>}
+          </div>
+
+          <div>
+            <label className="label">Room *</label>
+            <select required disabled={!form.ward_id} value={form.room_id}
+              onChange={e => setForm({...form, room_id: e.target.value, bed_id: ''})}
+              className="input">
+              <option value="">{form.ward_id ? 'Select Room' : 'Select a ward first'}</option>
+              {rooms.map(r => <option key={r.id} value={r.id}>{r.room_number}</option>)}
+            </select>
+            {form.ward_id && rooms.length === 0 && <p className="mt-1 text-xs text-red-500">No rooms found in this ward.</p>}
+          </div>
+
           <div>
             <label className="label">Bed *</label>
-            <select required value={form.bed_id} onChange={e => setForm({...form, bed_id: e.target.value})} className="input">
-              <option value="">Select Bed</option>
-              {vacantBeds.map(b => <option key={b.id} value={b.id}>{b.ward?.name} - {b.bed_number}</option>)}
+            <select required disabled={!form.room_id} value={form.bed_id}
+              onChange={e => setForm({...form, bed_id: e.target.value})}
+              className="input">
+              <option value="">{form.room_id ? 'Select Bed' : 'Select a room first'}</option>
+              {vacantBeds.map(b => <option key={b.id} value={b.id}>{b.bed_number}</option>)}
             </select>
-            {vacantBeds.length === 0 && <p className="mt-1 text-xs text-red-500">No vacant beds available</p>}
+            {form.room_id && vacantBeds.length === 0 && <p className="mt-1 text-xs text-red-500">No available beds in this room.</p>}
           </div>
+
           <div>
             <label className="label">Diagnosis</label>
             <input value={form.diagnosis} onChange={e => setForm({...form, diagnosis: e.target.value})} className="input" />
@@ -168,14 +213,14 @@ export function AdmissionsPage() {
           </div>
           <div className="flex justify-end gap-3">
             <button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>
-            <button type="submit" className="btn-primary" disabled={vacantBeds.length === 0}>Admit Patient</button>
+            <button type="submit" className="btn-primary" disabled={!form.bed_id}>Admit Patient</button>
           </div>
         </form>
       </Modal>
 
       <Modal isOpen={showDischargeModal} onClose={() => setShowDischargeModal(false)} title="Discharge Patient" size="sm">
         <div className="space-y-4">
-          <p className="text-sm text-gray-600">Discharge <strong>{selectedAdmission?.patient?.full_name}</strong> from {selectedAdmission?.bed?.ward?.name} - {selectedAdmission?.bed?.bed_number}?</p>
+          <p className="text-sm text-gray-600">Discharge <strong>{selectedAdmission?.patient?.full_name}</strong> from {selectedAdmission?.bed?.ward?.name} / {selectedAdmission?.bed?.room?.room_number} - {selectedAdmission?.bed?.bed_number}?</p>
           <div className="flex justify-end gap-3">
             <button onClick={() => setShowDischargeModal(false)} className="btn-secondary">Cancel</button>
             <button onClick={handleDischarge} className="btn-primary">Discharge</button>
