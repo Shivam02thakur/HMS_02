@@ -91,6 +91,11 @@ export function AdmissionsPage() {
     fetchData();
   }
 
+  function openAdmitModal() {
+    setForm({ patient_id: '', doctor_id: '', ward_id: '', room_id: '', bed_id: '', diagnosis: '', notes: '' });
+    setShowModal(true);
+  }
+
   return (
     <div className="space-y-6">
       <button onClick={() => navigate('/ipd')} className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700">
@@ -103,7 +108,7 @@ export function AdmissionsPage() {
           <p className="text-gray-500">Manage patient admissions and discharges</p>
         </div>
         {isReceptionist() && (
-          <button onClick={() => setShowModal(true)} className="btn-primary">
+          <button onClick={openAdmitModal} className="btn-primary">
             <Plus className="h-4 w-4 mr-2" /> Admit Patient
           </button>
         )}
