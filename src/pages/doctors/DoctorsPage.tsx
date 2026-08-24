@@ -11,6 +11,26 @@ import { Plus, Stethoscope, Eye, Power, Edit, Clock, IndianRupee } from 'lucide-
 import { formatCurrency, DAYS_OF_WEEK } from '@/lib/utils';
 import { useDebounce } from '@/hooks/useDebounce';
 
+// Specialization is free text (no lookup table). Trimming + title-casing on
+// save keeps "cardiology" / "Cardiology " / "CARDIOLOGY" from becoming three
+// separate values that the filter dropdown (and search) would then treat as distinct.
+// Acronyms that should stay fully uppercase rather than being title-cased
+// word-by-word (default rule would turn "ENT" into "Ent"). Extend this list
+// as new abbreviated specializations get added.
+const SPECIALIZATION_ACRONYMS = new Set(['ENT', 'ICU', 'ECG', 'OBGYN', 'ER', 'OPD']);
+
+function normalizeSpecialization(s: string): string {
+  return s.trim().replace(/\s+/g, ' ')
+    .split(' ')
+    .map(w => {
+      if (!w) return w;
+      const upper = w.toUpperCase();
+      if (SPECIALIZATION_ACRONYMS.has(upper)) return upper;
+      return w[0].toUpperCase() + w.slice(1).toLowerCase();
+    })
+    .join(' ');
+}
+
 export function DoctorsPage() {
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
@@ -19,7 +39,10 @@ export function DoctorsPage() {
   const [showModal, setShowModal] = useState(false);
   const [editingDoctor, setEditingDoctor] = useState<Doctor | null>(null);
   const [toggleTarget, setToggleTarget] = useState<Doctor | null>(null);
+  const [formError, setFormError] = useState('');
+  const [toggleError, setToggleError] = useState(''); 
   const [departmentFilter, setDepartmentFilter] = useState('');
+  const [specializationFilter, setSpecializationFilter] = useState('');
   const debouncedSearch = useDebounce(search, 300);
   const navigate = useNavigate();
   const { isAdmin } = useRole();
@@ -62,15 +85,20 @@ export function DoctorsPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    setFormError('');
     const payload = {
       ...form,
+      specialization: normalizeSpecialization(form.specialization),
       consultation_fee: parseFloat(form.consultation_fee) || 0,
       experience_years: parseInt(form.experience_years) || 0,
     };
-    if (editingDoctor) {
-      await supabase.from('doctors').update(payload).eq('id', editingDoctor.id);
-    } else {
-      await supabase.from('doctors').insert(payload);
+    const { error } = editingDoctor
+      ? await supabase.from('doctors').update(payload).eq('id', editingDoctor.id)
+      : await supabase.from('doctors').insert(payload);
+    if (error) {
+      setFormError(error.code === '23505' ? 'A doctor with this email already exists.' : 'Could not save doctor. Please try again.');
+      console.error(error);
+      return;
     }
     setShowModal(false);
     fetchData();
@@ -81,10 +109,21 @@ export function DoctorsPage() {
   // silently wipe every appointment/prescription this doctor ever had.
   async function handleToggleActive() {
     if (!toggleTarget) return;
-    await supabase.from('doctors').update({ is_active: !toggleTarget.is_active }).eq('id', toggleTarget.id);
+    setToggleError('');
+    const { error } = await supabase.from('doctors').update({ is_active: !toggleTarget.is_active }).eq('id', toggleTarget.id);
+    if (error) {
+      setToggleError(`Could not ${toggleTarget.is_active ? 'deactivate' : 'activate'} Dr. ${toggleTarget.full_name}. Please try again.`);
+      console.error(error);
+      setToggleTarget(null);
+      return;
+    }
     setToggleTarget(null);
     fetchData();
   }
+
+  const specializations = Array.from(
+    new Set(doctors.map(d => d.specialization).filter((s): s is string => !!s))
+  ).sort();
 
   const filteredDoctors = doctors.filter(d => {
     const matchesSearch = !debouncedSearch ||
@@ -92,7 +131,8 @@ export function DoctorsPage() {
       d.specialization?.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
       d.department?.name?.toLowerCase().includes(debouncedSearch.toLowerCase());
     const matchesDepartment = !departmentFilter || d.department_id === departmentFilter;
-    return matchesSearch && matchesDepartment;
+    const matchesSpecialization = !specializationFilter || d.specialization === specializationFilter;
+    return matchesSearch && matchesDepartment && matchesSpecialization;
   });
 
   return (
@@ -109,12 +149,23 @@ export function DoctorsPage() {
         )}
       </div>
 
+      {toggleError && (
+        <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2 flex items-center justify-between">
+          {toggleError}
+          <button onClick={() => setToggleError('')} className="ml-3 text-red-400 hover:text-red-600">✕</button>
+        </p>
+      )}
+
       <div className="card">
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
           <div className="flex-1"><SearchInput value={search} onChange={setSearch} placeholder="Search doctors..." /></div>
           <select value={departmentFilter} onChange={e => setDepartmentFilter(e.target.value)} className="input w-auto">
             <option value="">All Departments</option>
             {departments.map(d => <option key={d.id} value={d.id}>{d.name}{!d.is_active ? ' (Inactive)' : ''}</option>)}
+          </select>
+          <select value={specializationFilter} onChange={e => setSpecializationFilter(e.target.value)} className="input w-auto">
+            <option value="">All Specializations</option>
+            {specializations.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
 
@@ -181,7 +232,14 @@ export function DoctorsPage() {
               </select>
               {departments.length === 0 && <p className="mt-1 text-xs text-red-500">No departments found. Add a department first.</p>}
             </div>
-            <div><label className="label">Specialization</label><input value={form.specialization} onChange={e => setForm({...form, specialization: e.target.value})} className="input" /></div>
+            <div>
+              <label className="label">Specialization</label>
+              <input list="specialization-suggestions" value={form.specialization}
+                onChange={e => setForm({...form, specialization: e.target.value})} className="input" />
+              <datalist id="specialization-suggestions">
+                {specializations.map(s => <option key={s} value={s} />)}
+              </datalist>
+            </div>
             <div><label className="label">Consultation Fee (₹)</label><input type="number" value={form.consultation_fee} onChange={e => setForm({...form, consultation_fee: e.target.value})} className="input" /></div>
             <div><label className="label">Experience (Years)</label><input type="number" value={form.experience_years} onChange={e => setForm({...form, experience_years: e.target.value})} className="input" /></div>
             <div><label className="label">Available From</label><input type="time" value={form.available_time_start} onChange={e => setForm({...form, available_time_start: e.target.value})} className="input" /></div>
@@ -204,8 +262,9 @@ export function DoctorsPage() {
               <label htmlFor="is_active" className="text-sm text-gray-700">Active</label>
             </div>
           </div>
+          {formError && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{formError}</p>}
           <div className="flex justify-end gap-3 pt-2">
-            <button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>
+            <button type="button" onClick={() => { setShowModal(false); setFormError(''); }} className="btn-secondary">Cancel</button>
             <button type="submit" className="btn-primary">{editingDoctor ? 'Update' : 'Add'}</button>
           </div>
         </form>
