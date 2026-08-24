@@ -6,7 +6,7 @@ import { Modal } from '@/components/ui/Modal';
 import { SearchInput } from '@/components/ui/SearchInput';
 import { EmptyState } from '@/components/ui/EmptyState';
 import type { Appointment, Patient, Doctor, Department } from '@/types';
-import { Plus, User, Stethoscope, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
+import { Plus, User, Stethoscope, CheckCircle, XCircle, AlertCircle, RefreshCw } from 'lucide-react';
 import { formatDate, formatTime, getStatusColor, TIME_SLOTS } from '@/lib/utils';
 import { useDebounce } from '@/hooks/useDebounce';
 
@@ -22,6 +22,10 @@ export function AppointmentsPage() {
   const [showModal, setShowModal] = useState(false);
   const [showCompleteModal, setShowCompleteModal] = useState(false);
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
+  const [showRescheduleModal, setShowRescheduleModal] = useState(false);
+  const [rescheduleForm, setRescheduleForm] = useState({ appointment_date: '', appointment_time: '' });
+  const [rescheduleBookedTimes, setRescheduleBookedTimes] = useState<string[]>([]);
+  const [rescheduleError, setRescheduleError] = useState('');
   const [filterDate, setFilterDate] = useState('');
   const debouncedSearch = useDebounce(search, 300);
   const { user } = useAuth();
@@ -72,6 +76,22 @@ export function AppointmentsPage() {
     }
     fetchBookedTimes();
   }, [form.doctor_id, form.appointment_date]);
+  // Same pattern as the booking form's bookedTimes effect, but scoped to the
+  // appointment being rescheduled and excluding its own current slot — otherwise
+  // rescheduling to the same time it's already at would look "taken".
+  useEffect(() => {
+    async function fetchRescheduleBookedTimes() {
+      if (!selectedAppointment || !rescheduleForm.appointment_date) { setRescheduleBookedTimes([]); return; }
+      const { data } = await supabase.from('appointments')
+        .select('appointment_time')
+        .eq('doctor_id', selectedAppointment.doctor_id)
+        .eq('appointment_date', rescheduleForm.appointment_date)
+        .in('status', ['BOOKED', 'COMPLETED'])
+        .neq('id', selectedAppointment.id);
+      setRescheduleBookedTimes((data || []).map((a: { appointment_time: string }) => a.appointment_time));
+    }
+    fetchRescheduleBookedTimes();
+  }, [selectedAppointment, rescheduleForm.appointment_date]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -127,6 +147,58 @@ export function AppointmentsPage() {
       return true;
     });
     return { slots, reason: slots.length === 0 ? 'Fully booked — no open slots left for this date.' : null };
+  }
+
+  function getRescheduleSlotInfo(): { slots: string[]; reason: string | null } {
+    if (!selectedAppointment || !rescheduleForm.appointment_date) return { slots: [], reason: null };
+    const doctor = selectedAppointment.doctor;
+    if (!doctor) return { slots: [], reason: null };
+    if (!doctor.is_active) return { slots: [], reason: 'This doctor is currently inactive.' };
+    const dayName = new Date(rescheduleForm.appointment_date).toLocaleDateString('en-US', { weekday: 'long' });
+    if (!doctor.available_days?.includes(dayName)) {
+      return { slots: [], reason: 'Doctor is not available on this day.' };
+    }
+    const start = doctor.available_time_start;
+    const end = doctor.available_time_end;
+    const slots = TIME_SLOTS.filter(slot => {
+      if (start && slot < start) return false;
+      if (end && slot > end) return false;
+      if (rescheduleBookedTimes.includes(slot)) return false;
+      return true;
+    });
+    return { slots, reason: slots.length === 0 ? 'Fully booked — no open slots left for this date.' : null };
+  }
+
+  function openRescheduleModal(appt: Appointment) {
+    setSelectedAppointment(appt);
+    setRescheduleForm({ appointment_date: appt.appointment_date, appointment_time: appt.appointment_time });
+    setRescheduleError('');
+    setShowRescheduleModal(true);
+  }
+
+  async function handleReschedule(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selectedAppointment) return;
+    setRescheduleError('');
+    const { error } = await supabase.from('appointments')
+      .update({ appointment_date: rescheduleForm.appointment_date, appointment_time: rescheduleForm.appointment_time })
+      .eq('id', selectedAppointment.id);
+    if (error) {
+      if (error.code === '23505') {
+        setRescheduleError('That slot was just booked by someone else. Pick another time.');
+        const { data } = await supabase.from('appointments').select('appointment_time')
+          .eq('doctor_id', selectedAppointment.doctor_id).eq('appointment_date', rescheduleForm.appointment_date)
+          .in('status', ['BOOKED', 'COMPLETED']).neq('id', selectedAppointment.id);
+        setRescheduleBookedTimes((data || []).map((a: { appointment_time: string }) => a.appointment_time));
+        setRescheduleForm(f => ({ ...f, appointment_time: '' }));
+      } else {
+        setRescheduleError('Could not reschedule the appointment. Please try again.');
+      }
+      return;
+    }
+    setShowRescheduleModal(false);
+    setSelectedAppointment(null);
+    fetchData();
   }
 
   const filteredDoctorsForBooking = form.department_id ? doctors.filter(d => d.department_id === form.department_id) : doctors;
@@ -189,6 +261,11 @@ export function AppointmentsPage() {
                         {a.status === 'BOOKED' && isDoctor() && (
                           <button onClick={() => openCompleteModal(a)} className="p-1.5 text-green-600 hover:bg-green-50 rounded" title="Complete">
                             <CheckCircle className="h-4 w-4" />
+                          </button>
+                        )}
+                        {a.status === 'BOOKED' && isReceptionist() && (
+                          <button onClick={() => openRescheduleModal(a)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded" title="Reschedule">
+                            <RefreshCw className="h-4 w-4" />
                           </button>
                         )}
                         {a.status === 'BOOKED' && (
@@ -278,6 +355,36 @@ export function AppointmentsPage() {
             }} className="btn-primary">Complete</button>
           </div>
         </div>
+      </Modal>
+      <Modal isOpen={showRescheduleModal} onClose={() => { setShowRescheduleModal(false); setRescheduleError(''); }} title="Reschedule Appointment">
+        <form onSubmit={handleReschedule} className="space-y-4">
+          <p className="text-sm text-gray-600">
+            <strong>{selectedAppointment?.patient?.full_name}</strong> with Dr. {selectedAppointment?.doctor?.full_name}
+          </p>
+          <div>
+            <label className="label">New Date *</label>
+            <input type="date" required value={rescheduleForm.appointment_date}
+              onChange={e => setRescheduleForm({ appointment_date: e.target.value, appointment_time: '' })}
+              className="input" min={new Date().toISOString().split('T')[0]} />
+          </div>
+          <div>
+            <label className="label">New Time Slot *</label>
+            <select required value={rescheduleForm.appointment_time}
+              onChange={e => setRescheduleForm({...rescheduleForm, appointment_time: e.target.value})}
+              className="input" disabled={!rescheduleForm.appointment_date}>
+              <option value="">{!rescheduleForm.appointment_date ? 'Select a date first' : 'Select Time'}</option>
+              {getRescheduleSlotInfo().slots.map(t => <option key={t} value={t}>{formatTime(t)}</option>)}
+            </select>
+            {getRescheduleSlotInfo().reason && (
+              <p className="mt-1 text-xs text-red-500">{getRescheduleSlotInfo().reason}</p>
+            )}
+          </div>
+          {rescheduleError && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{rescheduleError}</p>}
+          <div className="flex justify-end gap-3">
+            <button type="button" onClick={() => { setShowRescheduleModal(false); setRescheduleError(''); }} className="btn-secondary">Cancel</button>
+            <button type="submit" className="btn-primary">Reschedule</button>
+          </div>
+        </form>
       </Modal>
     </div>
   );
