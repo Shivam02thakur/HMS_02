@@ -4,7 +4,7 @@ import { Modal } from './Modal';
 interface ConfirmDialogProps {
   isOpen: boolean;
   onClose: () => void;
-  onConfirm: () => void;
+  onConfirm: () => void | Promise<void>;
   title: string;
   message: string;
   confirmText?: string;
@@ -26,7 +26,7 @@ export function ConfirmDialog({
         <div className="mt-6 flex gap-3 w-full">
           <button onClick={onClose} className="btn-secondary flex-1">{cancelText}</button>
           <button
-            onClick={() => { onConfirm(); onClose(); }}
+            onClick={async () => { await onConfirm(); onClose(); }}
             className={isDanger ? 'btn-danger flex-1' : 'btn-primary flex-1'}
           >
             {confirmText}
