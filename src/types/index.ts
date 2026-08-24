@@ -80,9 +80,9 @@ export interface Ward {
   name: string;
   ward_type: 'General' | 'ICU' | 'Private';
   capacity: number;
+  daily_rate: number;
   created_at: string;
 }
-
 export type BedStatus = 'VACANT' | 'OCCUPIED' | 'MAINTENANCE';
 
 export interface Bed {
@@ -247,3 +247,4 @@ export interface DashboardStats {
   today_revenue: number;
   pending_invoices: number;
 }
+
