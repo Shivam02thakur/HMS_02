@@ -219,6 +219,7 @@ export interface InvoiceItem {
   total_price: number;
   item_type?: 'consultation' | 'lab_test' | 'medicine' | 'bed_charge' | 'other';
   reference_id?: string;
+  dispensed?: boolean;
   created_at: string;
 }
 
@@ -247,4 +248,3 @@ export interface DashboardStats {
   today_revenue: number;
   pending_invoices: number;
 }
-
