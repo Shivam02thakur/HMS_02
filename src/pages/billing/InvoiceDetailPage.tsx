@@ -5,13 +5,13 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useRole } from '@/hooks/useRole';
 import { Modal } from '@/components/ui/Modal';
 import { SearchInput } from '@/components/ui/SearchInput';
-import type { Invoice, InvoiceItem, Payment, Medicine, LabTest, Doctor, Ward } from '@/types';
+import type { Invoice, InvoiceItem, Payment, InvoiceAdjustment, Medicine, LabTest, Doctor, Ward } from '@/types';
 import {
   ArrowLeft, Plus, Trash2, Receipt, User, IndianRupee, CheckCircle, AlertTriangle,
-  Printer, Phone, StickyNote, Pill, FlaskConical, Stethoscope, BedDouble, FileText,
+  Printer, Phone, StickyNote, Pill, FlaskConical, Stethoscope, BedDouble, FileText, ChevronDown, MinusCircle,
 } from 'lucide-react';
-import { formatDate, formatCurrency, getStatusColor } from '@/lib/utils';
-import { recalcInvoicePaymentState, dispenseUndispensedMedicines, restockDispensedMedicines } from '@/lib/billing';
+import { formatDate, formatCurrency, getStatusColor, getStatusLabel } from '@/lib/utils';
+import { recalcInvoicePaymentState, dispenseUndispensedMedicines, restockDispensedMedicines, recordInvoiceAdjustment } from '@/lib/billing';
 
 type ItemType = 'medicine' | 'lab_test' | 'consultation' | 'bed_charge' | 'other';
 
@@ -39,9 +39,11 @@ export function InvoiceDetailPage() {
   const [invoice, setInvoice] = useState<Invoice | null>(null);
   const [items, setItems] = useState<InvoiceItem[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
+  const [adjustments, setAdjustments] = useState<InvoiceAdjustment[]>([]);
   const [loading, setLoading] = useState(true);
   const [showItemModal, setShowItemModal] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [showWaiverModal, setShowWaiverModal] = useState(false);
 
   // Reference data for auto-priced billing items
   const [medicines, setMedicines] = useState<Medicine[]>([]);
@@ -49,20 +51,29 @@ export function InvoiceDetailPage() {
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [wards, setWards] = useState<Ward[]>([]);
 
-  const [paymentForm, setPaymentForm] = useState({ amount: '', payment_mode: 'Cash', transaction_id: '', notes: '' });
+  const todayIso = () => new Date().toISOString().slice(0, 10);
+  const [paymentForm, setPaymentForm] = useState({ amount: '', payment_mode: 'Cash', transaction_id: '', notes: '', payment_date: todayIso() });
   const [paymentError, setPaymentError] = useState<string | null>(null);
   // Per-payment "Cancel" action (voids a single recorded payment)
   const [cancellingPaymentId, setCancellingPaymentId] = useState<string | null>(null);
+  // Secondary "More" menu next to Record Payment, houses the rare
+  // waive/adjust action so it isn't a one-click option sitting next to
+  // real payment recording.
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [waiverForm, setWaiverForm] = useState({ amount: '', reason: '' });
+  const [waiverError, setWaiverError] = useState<string | null>(null);
+  const [waiverSubmitting, setWaiverSubmitting] = useState(false);
 
   useEffect(() => { if (id) fetchData(); }, [id]);
 
   async function fetchData() {
     if (!id) return;
     setLoading(true);
-    const [{ data: inv }, { data: it }, { data: pay }, { data: meds }, { data: tests }, { data: docs }, { data: wds }] = await Promise.all([
+    const [{ data: inv }, { data: it }, { data: pay }, { data: adj }, { data: meds }, { data: tests }, { data: docs }, { data: wds }] = await Promise.all([
       supabase.from('invoices').select('*, patient:patients(*)').eq('id', id).single(),
       supabase.from('invoice_items').select('*').eq('invoice_id', id).order('created_at'),
       supabase.from('payments').select('*').eq('invoice_id', id).order('paid_at'),
+      supabase.from('invoice_adjustments').select('*, created_by_profile:profiles(full_name)').eq('invoice_id', id).order('created_at'),
       supabase.from('medicines').select('id, name, unit_price, stock_quantity').gt('stock_quantity', 0).order('name'),
       supabase.from('lab_tests').select('id, name, code, price').order('name'),
       supabase.from('doctors').select('id, full_name, consultation_fee').eq('is_active', true).order('full_name'),
@@ -71,6 +82,7 @@ export function InvoiceDetailPage() {
     setInvoice(inv as unknown as Invoice | null);
     setItems((it || []) as unknown as InvoiceItem[]);
     setPayments((pay || []) as unknown as Payment[]);
+    setAdjustments((adj || []) as unknown as InvoiceAdjustment[]);
     setMedicines((meds || []) as unknown as Medicine[]);
     setLabTests((tests || []) as unknown as LabTest[]);
     setDoctors((docs || []) as unknown as Doctor[]);
@@ -95,7 +107,8 @@ export function InvoiceDetailPage() {
       payment_mode: paymentForm.payment_mode as any,
       transaction_id: paymentForm.transaction_id || undefined,
       notes: paymentForm.notes,
-      received_by: user?.id
+      received_by: user?.id,
+      paid_at: paymentForm.payment_date ? new Date(paymentForm.payment_date).toISOString() : undefined,
     });
 
     if (error) {
@@ -131,7 +144,7 @@ export function InvoiceDetailPage() {
     }
 
     setShowPaymentModal(false);
-    setPaymentForm({ amount: '', payment_mode: 'Cash', transaction_id: '', notes: '' });
+    setPaymentForm({ amount: '', payment_mode: 'Cash', transaction_id: '', notes: '', payment_date: todayIso() });
     fetchData();
   }
 
@@ -173,30 +186,65 @@ export function InvoiceDetailPage() {
     fetchData();
   }
 
-  async function markAsPaid() {
-    if (!id || !invoice) return;
-    if (!window.confirm('Mark this invoice as fully paid without recording a payment? This cannot be undone from here.')) return;
-    setPaymentError(null);
+  // Opens the waiver modal, pre-clearing any stale amount/reason/error
+  // from a previous attempt.
+  function openWaiverModal() {
+    setShowMoreMenu(false);
+    setWaiverForm({ amount: '', reason: '' });
+    setWaiverError(null);
+    setShowWaiverModal(true);
+  }
 
-    const wasPaid = invoice.status === 'PAID';
-    const { error } = await supabase
-      .from('invoices')
-      .update({ paid_amount: invoice.total_amount, status: 'PAID' })
-      .eq('id', id);
-    if (error) {
-      console.error('Failed to mark invoice as paid:', error);
-      setPaymentError(error.message);
+  // Records a manually-entered waiver/adjustment against the outstanding
+  // balance. Deliberately does NOT default the amount field to the full
+  // remaining balance -- the user must type the amount they intend to
+  // waive. Validated both here (fast feedback) and again inside
+  // recordInvoiceAdjustment against the invoice's live outstanding
+  // balance (source of truth, in case it changed since this page loaded).
+  async function submitWaiver(e: React.FormEvent) {
+    e.preventDefault();
+    if (!id || !invoice) return;
+    setWaiverError(null);
+
+    const amount = parseFloat(waiverForm.amount);
+    if (!waiverForm.amount || !Number.isFinite(amount) || amount <= 0) {
+      setWaiverError('Enter a waiver amount greater than 0.');
+      return;
+    }
+    if (amount > remaining + 0.01) {
+      setWaiverError(`Waiver amount cannot exceed the outstanding balance (${formatCurrency(remaining)}).`);
+      return;
+    }
+    if (!waiverForm.reason.trim()) {
+      setWaiverError('Enter a reason for this waiver/adjustment.');
       return;
     }
 
-    if (!wasPaid) {
-      const failed = await dispenseUndispensedMedicines(id);
-      if (failed.length > 0) {
-        console.error('Some medicine items could not be dispensed:', failed);
-        setPaymentError('Marked as paid, but some medicine items could not be dispensed (check pharmacy stock).');
+    setWaiverSubmitting(true);
+    const wasPaid = invoice.status === 'PAID';
+
+    try {
+      const { status: newStatus } = await recordInvoiceAdjustment(id, amount, waiverForm.reason, user?.id);
+
+      // Same rule as payments: only dispense pharmacy stock the moment
+      // the invoice actually becomes fully settled, and only once.
+      if (newStatus === 'PAID' && !wasPaid) {
+        const failed = await dispenseUndispensedMedicines(id);
+        if (failed.length > 0) {
+          console.error('Some medicine items could not be dispensed:', failed);
+          setPaymentError('Waiver recorded, but some medicine items could not be dispensed (check pharmacy stock).');
+        }
       }
+    } catch (err: any) {
+      console.error('Failed to record waiver:', err);
+      setWaiverError(err.message || String(err));
+      setWaiverSubmitting(false);
+      return;
     }
 
+    setWaiverSubmitting(false);
+    setShowWaiverModal(false);
+    setWaiverForm({ amount: '', reason: '' });
     fetchData();
   }
 
@@ -244,7 +292,7 @@ export function InvoiceDetailPage() {
   if (loading) return <div className="flex h-96 items-center justify-center">Loading...</div>;
   if (!invoice) return <div className="flex h-96 items-center justify-center">Invoice not found</div>;
 
-  const remaining = invoice.total_amount - invoice.paid_amount;
+  const remaining = invoice.total_amount - invoice.paid_amount - Number(invoice.waived_amount || 0);
 
   return (
     <div className="space-y-6">
@@ -280,9 +328,10 @@ export function InvoiceDetailPage() {
             )}
           </div>
           <div className="text-right">
-            <span className={`badge ${getStatusColor(invoice.status)}`}>{invoice.status}</span>
+            <span className={`badge ${getStatusColor(invoice.status)}`}>{getStatusLabel(invoice.status)}</span>
             <p className="mt-2 text-2xl font-bold text-gray-900">{formatCurrency(invoice.total_amount)}</p>
             <p className="text-sm text-gray-500">Paid: {formatCurrency(invoice.paid_amount)}</p>
+            {invoice.waived_amount > 0 && <p className="text-sm text-gray-500">Waived: {formatCurrency(invoice.waived_amount)}</p>}
             {remaining > 0 && <p className="text-sm text-red-600">Due: {formatCurrency(remaining)}</p>}
           </div>
         </div>
@@ -355,49 +404,89 @@ export function InvoiceDetailPage() {
                     </tr>
                   );
                 })}
-                <tr className="border-t-2 border-gray-200">
-                  <td colSpan={4} className="table-cell text-right font-medium">Subtotal</td>
-                  <td className="table-cell font-bold">{formatCurrency(invoice.subtotal)}</td>
-                  <td className="print:hidden"></td>
-                </tr>
-                {invoice.discount > 0 && (
-                  <tr>
-                    <td colSpan={4} className="table-cell text-right font-medium">Discount</td>
-                    <td className="table-cell text-green-600">-{formatCurrency(invoice.discount)}</td>
-                    <td className="print:hidden"></td>
-                  </tr>
-                )}
-                <tr>
-                  <td colSpan={4} className="table-cell text-right font-bold text-lg">Total</td>
-                  <td className="table-cell font-bold text-lg text-primary-700">{formatCurrency(invoice.total_amount)}</td>
-                  <td className="print:hidden"></td>
-                </tr>
               </tbody>
             </table>
           </div>
         )}
-        {items.some(i => i.item_type === 'medicine') && invoice.status !== 'PAID' && (
+        {/* {items.some(i => i.item_type === 'medicine') && invoice.status !== 'PAID' && (
           <p className="mt-3 text-xs text-gray-400">
             Medicine stock is reserved but not yet dispensed from pharmacy — it dispenses automatically once this invoice is fully paid.
           </p>
+        )} */}
+
+        {/* Totals + primary payment action, together so the numbers that
+            justify "Record Payment" sit right next to the button. */}
+        {items.length > 0 && (
+          <div className="mt-4 flex justify-end border-t border-gray-100 pt-4">
+            <div className="w-full max-w-xs space-y-1.5">
+              <div className="flex justify-between text-sm text-gray-600">
+                <span>Subtotal</span>
+                <span>{formatCurrency(invoice.subtotal)}</span>
+              </div>
+              {invoice.discount > 0 && (
+                <div className="flex justify-between text-sm text-green-600">
+                  <span>Discount</span>
+                  <span>-{formatCurrency(invoice.discount)}</span>
+                </div>
+              )}
+              <div className="flex justify-between border-t border-gray-100 pt-1.5 text-base font-bold text-gray-900">
+                <span>Total</span>
+                <span>{formatCurrency(invoice.total_amount)}</span>
+              </div>
+              <div className="flex justify-between text-sm text-gray-600">
+                <span>Paid</span>
+                <span>{formatCurrency(invoice.paid_amount)}</span>
+              </div>
+              {invoice.waived_amount > 0 && (
+                <div className="flex justify-between text-sm text-gray-600">
+                  <span>Waived</span>
+                  <span>{formatCurrency(invoice.waived_amount)}</span>
+                </div>
+              )}
+              <div className={`flex justify-between border-t border-gray-100 pt-1.5 text-base font-bold ${remaining > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                <span>Balance Due</span>
+                <span>{formatCurrency(Math.max(remaining, 0))}</span>
+              </div>
+
+              {isReceptionist() && invoice.status !== 'PAID' && (
+                <div className="flex items-center justify-end gap-2 pt-3 print:hidden">
+                  <button
+                    onClick={() => { setPaymentForm({...paymentForm, amount: remaining.toString(), payment_date: todayIso()}); setShowPaymentModal(true); }}
+                    className="btn-primary text-xs py-1.5 px-3"
+                  >
+                    <IndianRupee className="h-3.5 w-3.5 mr-1" /> Record Payment
+                  </button>
+                  <div className="relative">
+                    <button
+                      onClick={() => setShowMoreMenu(v => !v)}
+                      className="btn-secondary text-xs py-1.5 px-2.5"
+                    >
+                      More <ChevronDown className="h-3.5 w-3.5 ml-1" />
+                    </button>
+                    {showMoreMenu && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setShowMoreMenu(false)} />
+                        <div className="absolute right-0 z-20 mt-1 w-52 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                          <button
+                            onClick={openWaiverModal}
+                            className="block w-full px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50"
+                          >
+                            Waive / Adjust Balance
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
 
       {/* Payments */}
       <div className="card">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
-          <h2 className="text-lg font-semibold text-gray-900">Payments</h2>
-          {isReceptionist() && invoice.status !== 'PAID' && (
-            <div className="flex items-center gap-3 print:hidden">
-              <button onClick={markAsPaid} className="text-xs text-gray-500 hover:text-gray-700 underline underline-offset-2">
-                Mark as paid without payment
-              </button>
-              <button onClick={() => { setPaymentForm({...paymentForm, amount: remaining.toString()}); setShowPaymentModal(true); }} className="btn-primary text-xs py-1.5 px-3">
-                <IndianRupee className="h-3.5 w-3.5 mr-1" /> Record Payment
-              </button>
-            </div>
-          )}
-        </div>
+        <h2 className="text-lg font-semibold text-gray-900 mb-4">Payments</h2>
         {payments.length === 0 ? <p className="text-center text-gray-500 py-4">No payments recorded</p> : (
           <div className="space-y-2">
             {payments.map(pay => (
@@ -431,6 +520,34 @@ export function InvoiceDetailPage() {
         )}
       </div>
 
+      {/* Adjustments / Waivers -- kept entirely separate from Payments so
+          waived amounts are never mistaken for money collected. */}
+      {adjustments.length > 0 && (
+        <div className="card">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">Adjustments &amp; Waivers</h2>
+          <div className="space-y-2">
+            {adjustments.map(adj => (
+              <div key={adj.id} className="flex items-start justify-between rounded-lg bg-orange-50 p-3">
+                <div className="flex items-start gap-2">
+                  <MinusCircle className="h-4 w-4 text-orange-500 mt-0.5 flex-shrink-0" />
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">
+                      {formatCurrency(adj.amount)}
+                      <span className="ml-2 badge bg-orange-100 text-orange-700 text-[10px]">{adj.adjustment_type}</span>
+                    </p>
+                    <p className="text-xs text-gray-600 mt-0.5">{adj.reason}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      {formatDate(adj.created_at)}
+                      {adj.created_by_profile?.full_name && ` · by ${adj.created_by_profile.full_name}`}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <AddItemModal
         isOpen={showItemModal}
         onClose={() => setShowItemModal(false)}
@@ -444,12 +561,16 @@ export function InvoiceDetailPage() {
 
       <Modal isOpen={showPaymentModal} onClose={() => { setShowPaymentModal(false); setPaymentError(null); }} title="Record Payment" size="sm">
         <form onSubmit={recordPayment} className="space-y-4">
+          <div className="rounded-lg bg-gray-50 px-3 py-2">
+            <p className="text-xs text-gray-500">Outstanding Amount</p>
+            <p className="text-lg font-bold text-gray-900">{formatCurrency(Math.max(remaining, 0))}</p>
+          </div>
           <div>
-            <label className="label">Amount (₹) *</label>
+            <label className="label">Amount *</label>
             <input type="number" step="0.01" required value={paymentForm.amount} onChange={e => setPaymentForm({...paymentForm, amount: e.target.value})} className="input" />
           </div>
           <div>
-            <label className="label">Payment Mode *</label>
+            <label className="label">Payment Method *</label>
             <select value={paymentForm.payment_mode} onChange={e => setPaymentForm({...paymentForm, payment_mode: e.target.value})} className="input">
               <option value="Cash">Cash</option>
               <option value="UPI">UPI</option>
@@ -458,7 +579,11 @@ export function InvoiceDetailPage() {
           </div>
           <div>
             <label className="label">Transaction ID</label>
-            <input value={paymentForm.transaction_id} onChange={e => setPaymentForm({...paymentForm, transaction_id: e.target.value})} className="input" />
+            <input value={paymentForm.transaction_id} onChange={e => setPaymentForm({...paymentForm, transaction_id: e.target.value})} className="input" placeholder="Optional" />
+          </div>
+          <div>
+            <label className="label">Payment Date *</label>
+            <input type="date" required max={todayIso()} value={paymentForm.payment_date} onChange={e => setPaymentForm({...paymentForm, payment_date: e.target.value})} className="input" />
           </div>
           {paymentError && (
             <div className="flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -469,6 +594,55 @@ export function InvoiceDetailPage() {
           <div className="flex justify-end gap-3">
             <button type="button" onClick={() => { setShowPaymentModal(false); setPaymentError(null); }} className="btn-secondary">Cancel</button>
             <button type="submit" className="btn-primary">Record</button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal isOpen={showWaiverModal} onClose={() => { setShowWaiverModal(false); setWaiverError(null); }} title="Waive / Adjust Balance" size="sm">
+        <form onSubmit={submitWaiver} className="space-y-4">
+          <div className="rounded-lg bg-gray-50 px-3 py-2">
+            <p className="text-xs text-gray-500">Outstanding Balance</p>
+            <p className="text-lg font-bold text-gray-900">{formatCurrency(Math.max(remaining, 0))}</p>
+          </div>
+          <div>
+            <label className="label">Waiver Amount *</label>
+            <input
+              type="number"
+              step="0.01"
+              min="0.01"
+              max={remaining > 0 ? remaining : undefined}
+              required
+              value={waiverForm.amount}
+              onChange={e => setWaiverForm({...waiverForm, amount: e.target.value})}
+              className="input"
+              placeholder="0.00"
+            />
+            {/* <p className="mt-1 text-xs text-gray-400">
+              Enter the exact amount to waive — it will never auto-fill the full balance. Must be greater than 0 and cannot exceed {formatCurrency(Math.max(remaining, 0))}.
+            </p> */}
+          </div>
+          <div>
+            <label className="label">Reason / Description *</label>
+            <textarea
+              required
+              value={waiverForm.reason}
+              onChange={e => setWaiverForm({...waiverForm, reason: e.target.value})}
+              className="input"
+              rows={3}
+              placeholder="e.g. Goodwill discount for delayed treatment, billing correction, etc."
+            />
+          </div>
+          {waiverError && (
+            <div className="flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+              <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+              {waiverError}
+            </div>
+          )}
+          <div className="flex justify-end gap-3">
+            <button type="button" onClick={() => { setShowWaiverModal(false); setWaiverError(null); }} className="btn-secondary">Cancel</button>
+            <button type="submit" disabled={waiverSubmitting} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
+              {waiverSubmitting ? 'Recording...' : 'Record Waiver'}
+            </button>
           </div>
         </form>
       </Modal>

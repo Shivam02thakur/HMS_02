@@ -11,6 +11,7 @@ import { DoctorDetailPage } from '@/pages/doctors/DoctorDetailPage';
 import { DepartmentsPage } from '@/pages/departments/DepartmentsPage';
 import { AppointmentsPage } from '@/pages/appointments/AppointmentsPage';
 import { PrescriptionsPage } from '@/pages/prescriptions/PrescriptionsPage';
+import { PrescriptionDetailPage } from '@/pages/prescriptions/PrescriptionDetailPage';
 import { PharmacyPage } from '@/pages/pharmacy/PharmacyPage';
 import { LaboratoryPage } from '@/pages/laboratory/LaboratoryPage';
 import { BillingPage } from '@/pages/billing/BillingPage';
@@ -57,6 +58,7 @@ function AppRoutes() {
         <Route path="departments" element={<DepartmentsPage />} />
         <Route path="appointments" element={<AppointmentsPage />} />
         <Route path="prescriptions" element={<PrescriptionsPage />} />
+        <Route path="prescriptions/:id" element={<PrescriptionDetailPage />} />
         <Route path="pharmacy" element={<PharmacyPage />} />
         <Route path="laboratory" element={<LaboratoryPage />} />
         <Route path="billing" element={<BillingPage />} />

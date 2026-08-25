@@ -19,24 +19,98 @@ import type { InvoiceStatus } from '@/types';
 // ============================================================
 
 export async function recalcInvoicePaymentState(invoiceId: string, totalAmount: number) {
-  const { data: pays, error } = await supabase.from('payments').select('amount').eq('invoice_id', invoiceId);
-  if (error) throw error;
+  const [{ data: pays, error: paysError }, { data: adjs, error: adjsError }] = await Promise.all([
+    supabase.from('payments').select('amount').eq('invoice_id', invoiceId),
+    supabase.from('invoice_adjustments').select('amount').eq('invoice_id', invoiceId),
+  ]);
+  if (paysError) throw paysError;
+  if (adjsError) throw adjsError;
 
   const paidAmount = (pays || []).reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  // Waived amounts count toward closing the invoice out, but are tracked
+  // in their own column -- paid_amount must only ever reflect money
+  // actually collected via the payments table.
+  const waivedAmount = (adjs || []).reduce((sum, a) => sum + Number(a.amount || 0), 0);
+  const settledAmount = paidAmount + waivedAmount;
+
   const status: InvoiceStatus =
-    totalAmount > 0 && paidAmount >= totalAmount - 0.01
+    totalAmount > 0 && settledAmount >= totalAmount - 0.01
       ? 'PAID'
-      : paidAmount > 0
+      : settledAmount > 0
       ? 'PARTIAL'
       : 'PENDING';
 
   const { error: updateError } = await supabase
     .from('invoices')
-    .update({ paid_amount: paidAmount, status })
+    .update({ paid_amount: paidAmount, waived_amount: waivedAmount, status })
     .eq('id', invoiceId);
   if (updateError) throw updateError;
 
-  return { paidAmount, status };
+  return { paidAmount, waivedAmount, status };
+}
+
+/**
+ * Records a waiver/adjustment against an invoice's outstanding balance
+ * and recalculates the invoice's paid/waived/status fields from the
+ * resulting ledger.
+ *
+ * This is deliberately NOT an insert into the payments table -- a waiver
+ * is not money collected, and must never be presented or counted as one.
+ * It requires a manually-entered amount (never auto-fills or defaults to
+ * "the whole remaining balance") and a non-empty reason, and is
+ * server-validated against the *current* outstanding balance
+ * (total_amount - paid_amount - waived_amount) at the moment it's
+ * recorded, not against whatever the caller's stale local state thinks
+ * the balance is.
+ *
+ * Returns the created adjustment row and the recalculated invoice state.
+ */
+export async function recordInvoiceAdjustment(
+  invoiceId: string,
+  amount: number,
+  reason: string,
+  createdBy: string | undefined,
+  adjustmentType: 'WAIVER' | 'WRITE_OFF' | 'DISCOUNT' | 'CORRECTION' = 'WAIVER'
+) {
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error('Enter a waiver amount greater than 0.');
+  }
+  const trimmedReason = reason.trim();
+  if (!trimmedReason) {
+    throw new Error('A reason is required to record a waiver/adjustment.');
+  }
+
+  const { data: invoice, error: invoiceError } = await supabase
+    .from('invoices')
+    .select('total_amount, paid_amount, waived_amount')
+    .eq('id', invoiceId)
+    .single();
+  if (invoiceError) throw invoiceError;
+  if (!invoice) throw new Error('Invoice not found.');
+
+  const outstanding = Number(invoice.total_amount) - Number(invoice.paid_amount) - Number(invoice.waived_amount);
+  if (amount > outstanding + 0.01) {
+    throw new Error(
+      `Waiver amount cannot exceed the outstanding balance (${outstanding.toFixed(2)}).`
+    );
+  }
+
+  const { data: adjustment, error: insertError } = await supabase
+    .from('invoice_adjustments')
+    .insert({
+      invoice_id: invoiceId,
+      amount,
+      adjustment_type: adjustmentType,
+      reason: trimmedReason,
+      created_by: createdBy,
+    })
+    .select()
+    .single();
+  if (insertError) throw insertError;
+
+  const { status } = await recalcInvoicePaymentState(invoiceId, Number(invoice.total_amount));
+
+  return { adjustment, status };
 }
 
 /**

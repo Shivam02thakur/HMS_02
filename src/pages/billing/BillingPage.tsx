@@ -10,9 +10,9 @@ import { StatCard } from '@/components/ui/StatCard';
 import type { Invoice, Patient, InvoiceStatus } from '@/types';
 import {
   Plus, User, IndianRupee, Wallet, Receipt, AlertCircle,
-  Download, X, ChevronLeft, ChevronRight, SlidersHorizontal, CheckCircle
+  Download, X, ChevronLeft, ChevronRight, SlidersHorizontal, CheckCircle, History
 } from 'lucide-react';
-import { formatDate, formatCurrency, formatNumber, getStatusColor } from '@/lib/utils';
+import { formatDate, formatCurrency, formatNumber, getStatusColor, getStatusLabel } from '@/lib/utils';
 import { useDebounce } from '@/hooks/useDebounce';
 import { recalcInvoicePaymentState, dispenseUndispensedMedicines } from '@/lib/billing';
 
@@ -20,7 +20,7 @@ const PAGE_SIZE = 10;
 const STATUS_OPTIONS: { value: InvoiceStatus | 'ALL'; label: string }[] = [
   { value: 'ALL', label: 'All Statuses' },
   { value: 'PENDING', label: 'Pending' },
-  { value: 'PARTIAL', label: 'Partial' },
+  { value: 'PARTIAL', label: 'Partially Paid' },
   { value: 'PAID', label: 'Paid' },
 ];
 
@@ -37,7 +37,17 @@ export function BillingPage() {
 
   const [showModal, setShowModal] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [showRevenueHistory, setShowRevenueHistory] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
+
+  // Revenue collected is tracked independently of the filtered invoice list
+  // above -- it's driven off the payments table (paid_at) so "today" and
+  // "this year" stay accurate in real time regardless of whatever search/
+  // status/date filters are applied to the invoice table.
+  const [revenueLoading, setRevenueLoading] = useState(true);
+  const [todayRevenue, setTodayRevenue] = useState(0);
+  const [yearToDateRevenue, setYearToDateRevenue] = useState(0);
+  const [dailyRevenue, setDailyRevenue] = useState<{ dateKey: string; label: string; amount: number; count: number }[]>([]);
   const debouncedSearch = useDebounce(search, 300);
   const { user } = useAuth();
   const { isReceptionist } = useRole();
@@ -51,6 +61,68 @@ export function BillingPage() {
 
   useEffect(() => { fetchData(); }, [debouncedSearch, statusFilter, dateFrom, dateTo]);
   useEffect(() => { setCurrentPage(1); }, [debouncedSearch, statusFilter, dateFrom, dateTo]);
+  useEffect(() => { fetchRevenueData(); }, []);
+
+  // Pulls every payment recorded so far this calendar year and rolls it up
+  // into: today's total, the year-to-date total, and a day-by-day history
+  // (most recent first) for the revenue history view.
+  async function fetchRevenueData() {
+    setRevenueLoading(true);
+    const now = new Date();
+    const yearStart = `${now.getFullYear()}-01-01T00:00:00`;
+
+    const { data, error } = await supabase
+      .from('payments')
+      .select('amount, paid_at')
+      .gte('paid_at', yearStart)
+      .order('paid_at', { ascending: false });
+
+    if (error) {
+      console.error('Failed to load revenue data:', error);
+      setRevenueLoading(false);
+      return;
+    }
+
+    const todayKey = dateKey(now);
+    let today = 0;
+    let yearToDate = 0;
+    const byDate = new Map<string, { label: string; amount: number; count: number }>();
+
+    for (const p of (data || [])) {
+      const paidAt = new Date(p.paid_at as unknown as string);
+      const amount = Number(p.amount || 0);
+      const key = dateKey(paidAt);
+
+      yearToDate += amount;
+      if (key === todayKey) today += amount;
+
+      const existing = byDate.get(key);
+      if (existing) {
+        existing.amount += amount;
+        existing.count += 1;
+      } else {
+        byDate.set(key, { label: formatDate(paidAt), amount, count: 1 });
+      }
+    }
+
+    const history = Array.from(byDate.entries())
+      .map(([key, v]) => ({ dateKey: key, label: v.label, amount: v.amount, count: v.count }))
+      .sort((a, b) => b.dateKey.localeCompare(a.dateKey));
+
+    setTodayRevenue(today);
+    setYearToDateRevenue(yearToDate);
+    setDailyRevenue(history);
+    setRevenueLoading(false);
+  }
+
+  // Local (not UTC) Y-M-D key, so a payment made this evening in the
+  // user's timezone still counts as "today" even if UTC has rolled over.
+  function dateKey(d: Date) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
 
   async function fetchData() {
     setLoading(true);
@@ -86,7 +158,7 @@ export function BillingPage() {
     const totalRevenue = invoices.reduce((sum, inv) => sum + Number(inv.paid_amount || 0), 0);
     const outstanding = invoices.reduce((sum, inv) => {
       if (inv.status === 'PAID') return sum;
-      return sum + (Number(inv.total_amount || 0) - Number(inv.paid_amount || 0));
+      return sum + (Number(inv.total_amount || 0) - Number(inv.paid_amount || 0) - Number(inv.waived_amount || 0));
     }, 0);
     const pendingCount = invoices.filter(i => i.status !== 'PAID').length;
     return { totalRevenue, outstanding, totalInvoices: invoices.length, pendingCount };
@@ -110,7 +182,7 @@ export function BillingPage() {
       formatDate(inv.invoice_date),
       inv.total_amount.toFixed(2),
       inv.paid_amount.toFixed(2),
-      (inv.total_amount - inv.paid_amount).toFixed(2),
+      (inv.total_amount - inv.paid_amount - Number(inv.waived_amount || 0)).toFixed(2),
       inv.status,
     ]);
     const csv = [header, ...rows]
@@ -157,7 +229,7 @@ export function BillingPage() {
     // anyway would leave the status and the actual paid amount out of
     // sync -- so we refuse and point to the right place for partial
     // payments instead.
-    const remainingBalance = Number(selectedInvoice.total_amount) - Number(selectedInvoice.paid_amount);
+    const remainingBalance = Number(selectedInvoice.total_amount) - Number(selectedInvoice.paid_amount) - Number(selectedInvoice.waived_amount || 0);
     if (amount < remainingBalance - 0.01) {
       setPaymentError(
         `This only covers ${formatCurrency(amount)} of the ${formatCurrency(remainingBalance)} owed. ` +
@@ -208,6 +280,7 @@ export function BillingPage() {
     setSelectedInvoice(null);
     setPaymentForm({ amount: '', payment_mode: 'Cash', transaction_id: '', notes: '' });
     fetchData();
+    fetchRevenueData();
   }
 
   return (
@@ -232,7 +305,32 @@ export function BillingPage() {
       {/* Summary cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard title="Total Invoices" value={formatNumber(summary.totalInvoices)} icon={Receipt} color="blue" />
-        <StatCard title="Revenue Collected" value={formatCurrency(summary.totalRevenue)} icon={Wallet} color="green" />
+
+        {/* Revenue Collected: real-time today's/year-to-date totals from
+            the payments table, with a link into the full daily history. */}
+        <button onClick={() => setShowRevenueHistory(true)} className="card w-full text-left transition hover:shadow-md">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-500">Revenue Collected</p>
+              {revenueLoading ? (
+                <p className="mt-1 text-sm text-gray-400">Loading...</p>
+              ) : (
+                <>
+                  <p className="mt-1 text-2xl font-bold text-gray-900">{formatCurrency(todayRevenue)}</p>
+                  <p className="text-xs text-gray-400">today</p>
+                  <p className="mt-1 text-sm font-semibold text-gray-600">{formatCurrency(yearToDateRevenue)} <span className="font-normal text-gray-400">this year</span></p>
+                </>
+              )}
+            </div>
+            <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-xl bg-green-50 text-green-600">
+              <Wallet className="h-6 w-6" />
+            </div>
+          </div>
+          <p className="mt-3 flex items-center gap-1 text-xs font-medium text-primary-600">
+            <History className="h-3.5 w-3.5" /> View daily history
+          </p>
+        </button>
+
         <StatCard title="Outstanding" value={formatCurrency(summary.outstanding)} icon={IndianRupee} color="red" />
         <StatCard title="Pending / Partial" value={formatNumber(summary.pendingCount)} icon={AlertCircle} color="yellow" />
       </div>
@@ -299,7 +397,7 @@ export function BillingPage() {
                 </thead>
                 <tbody>
                   {paginatedInvoices.map((inv) => {
-                    const balance = inv.total_amount - inv.paid_amount;
+                    const balance = inv.total_amount - inv.paid_amount - Number(inv.waived_amount || 0);
                     return (
                       <tr key={inv.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => navigate(`/billing/${inv.id}`)}>
                         <td className="table-cell font-mono text-xs">{inv.invoice_number}</td>
@@ -312,14 +410,14 @@ export function BillingPage() {
                         <td className="table-cell">{formatDate(inv.invoice_date)}</td>
                         <td className="table-cell font-medium">{formatCurrency(inv.total_amount)}</td>
                         <td className="table-cell">
-                          <span className={`badge ${getStatusColor(inv.status)}`}>{inv.status}</span>
+                          <span className={`badge ${getStatusColor(inv.status)}`}>{getStatusLabel(inv.status)}</span>
                           {balance > 0 && (
                             <p className="mt-1 text-xs text-red-600 font-medium">{formatCurrency(balance)} due</p>
                           )}
                         </td>
                         <td className="table-cell text-right">
                           {inv.status !== 'PAID' && isReceptionist() ? (
-                            <button onClick={(e) => { e.stopPropagation(); setSelectedInvoice(inv); setPaymentForm({...paymentForm, amount: (inv.total_amount - inv.paid_amount).toString()}); setShowPaymentModal(true); }} className="text-xs bg-medical-50 text-medical-700 px-2.5 py-1.5 rounded-md font-medium hover:bg-medical-100">
+                            <button onClick={(e) => { e.stopPropagation(); setSelectedInvoice(inv); setPaymentForm({...paymentForm, amount: (inv.total_amount - inv.paid_amount - Number(inv.waived_amount || 0)).toString()}); setShowPaymentModal(true); }} className="text-xs bg-medical-50 text-medical-700 px-2.5 py-1.5 rounded-md font-medium hover:bg-medical-100">
                               Settle
                             </button>
                           ) : inv.status === 'PAID' ? (
@@ -387,7 +485,7 @@ export function BillingPage() {
         <form onSubmit={handlePayment} className="space-y-4">
           {selectedInvoice && (
             <p className="text-sm text-gray-500">
-              Amount owed: <span className="font-semibold text-gray-900">{formatCurrency(Number(selectedInvoice.total_amount) - Number(selectedInvoice.paid_amount))}</span>
+              Amount owed: <span className="font-semibold text-gray-900">{formatCurrency(Number(selectedInvoice.total_amount) - Number(selectedInvoice.paid_amount) - Number(selectedInvoice.waived_amount || 0))}</span>
             </p>
           )}
           <div>
@@ -396,7 +494,7 @@ export function BillingPage() {
             <p className="mt-1 text-xs text-gray-400">This closes the invoice as PAID — it must cover the full amount owed.</p>
           </div>
           <div>
-            <label className="label">Payment Mode *</label>
+            <label className="label">Payment Method *</label>
             <select value={paymentForm.payment_mode} onChange={e => setPaymentForm({...paymentForm, payment_mode: e.target.value})} className="input">
               <option value="Cash">Cash</option>
               <option value="UPI">UPI</option>
@@ -421,6 +519,56 @@ export function BillingPage() {
             <button type="submit" className="btn-primary">Record Payment</button>
           </div>
         </form>
+      </Modal>
+
+      <Modal isOpen={showRevenueHistory} onClose={() => setShowRevenueHistory(false)} title="Revenue Collected" size="lg">
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-lg bg-green-50 p-4">
+              <p className="text-xs font-medium text-green-700">Today</p>
+              <p className="mt-1 text-xl font-bold text-green-900">{formatCurrency(todayRevenue)}</p>
+            </div>
+            <div className="rounded-lg bg-gray-50 p-4">
+              <p className="text-xs font-medium text-gray-500">{new Date().getFullYear()} Year to Date</p>
+              <p className="mt-1 text-xl font-bold text-gray-900">{formatCurrency(yearToDateRevenue)}</p>
+            </div>
+          </div>
+
+          <div>
+            <p className="mb-2 text-sm font-medium text-gray-700">Daily Collection History</p>
+            {revenueLoading ? (
+              <div className="py-8 text-center text-sm text-gray-400">Loading...</div>
+            ) : dailyRevenue.length === 0 ? (
+              <EmptyState title="No revenue recorded yet" description="Payments recorded this year will show up here, day by day." />
+            ) : (
+              <div className="max-h-96 overflow-y-auto rounded-lg border border-gray-100">
+                <table className="w-full">
+                  <thead className="sticky top-0 bg-white">
+                    <tr>
+                      <th className="table-header">Date</th>
+                      <th className="table-header text-right">Payments</th>
+                      <th className="table-header text-right">Amount Collected</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dailyRevenue.map(day => (
+                      <tr key={day.dateKey} className={day.dateKey === dateKey(new Date()) ? 'bg-green-50/60' : ''}>
+                        <td className="table-cell">
+                          {day.label}
+                          {day.dateKey === dateKey(new Date()) && (
+                            <span className="ml-2 badge bg-green-100 text-green-800">Today</span>
+                          )}
+                        </td>
+                        <td className="table-cell text-right">{formatNumber(day.count)}</td>
+                        <td className="table-cell text-right font-medium">{formatCurrency(day.amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
       </Modal>
     </div>
   );
