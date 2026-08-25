@@ -43,6 +43,13 @@ export function DoctorDetailPage() {
             <h1 className="text-2xl font-bold text-gray-900">{doctor.full_name}</h1>
             <p className="text-primary-600">{doctor.specialization}</p>
             <p className="text-sm text-gray-500">{doctor.department?.name}</p>
+            {(doctor.qualification || doctor.registration_no) && (
+              <p className="text-sm text-gray-500">
+                {doctor.qualification}
+                {doctor.qualification && doctor.registration_no ? ' · ' : ''}
+                {doctor.registration_no ? `Reg. No: ${doctor.registration_no}` : ''}
+              </p>
+            )}
             <div className="mt-3 flex flex-wrap gap-4 text-sm text-gray-600">
               <span className="flex items-center gap-1"><IndianRupee className="h-3.5 w-3.5" /> {formatCurrency(doctor.consultation_fee)}</span>
               <span className="flex items-center gap-1"><Clock className="h-3.5 w-3.5" /> {doctor.experience_years} years exp.</span>

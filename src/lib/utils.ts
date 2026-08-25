@@ -29,6 +29,19 @@ export function formatCurrency(amount: number): string {
   }).format(amount);
 }
 
+export function calculateAge(dateOfBirth?: string | null): number | null {
+  if (!dateOfBirth) return null;
+  const dob = new Date(dateOfBirth);
+  if (isNaN(dob.getTime())) return null;
+  const today = new Date();
+  let age = today.getFullYear() - dob.getFullYear();
+  const monthDiff = today.getMonth() - dob.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < dob.getDate())) {
+    age--;
+  }
+  return age;
+}
+
 export function formatNumber(num: number): string {
   return new Intl.NumberFormat('en-IN').format(num);
 }
@@ -50,6 +63,13 @@ export function getStatusColor(status: string): string {
     MAINTENANCE: 'bg-gray-100 text-gray-800',
   };
   return colors[status] || 'bg-gray-100 text-gray-800';
+}
+
+export function getStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    PARTIAL: 'PARTIALLY PAID',
+  };
+  return labels[status] || status;
 }
 
 export const TIME_SLOTS = [

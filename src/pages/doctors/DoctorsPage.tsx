@@ -49,7 +49,7 @@ export function DoctorsPage() {
 
   const [form, setForm] = useState({
     full_name: '', email: '', phone: '', department_id: '',
-    specialization: '', consultation_fee: '', experience_years: '',
+    specialization: '', qualification: '', registration_no: '', consultation_fee: '', experience_years: '',
     available_days: [] as string[], available_time_start: '', available_time_end: '', is_active: true
   });
 
@@ -58,7 +58,7 @@ export function DoctorsPage() {
   async function fetchData() {
     setLoading(true);
     const [{ data: d }, { data: depts }] = await Promise.all([
-      supabase.from('doctors').select('*, department:departments(name)').order('full_name'),
+      supabase.from('doctors').select('*, department:departments(name)').order('full_name'), // includes qualification & registration_no via '*'
       supabase.from('departments').select('*').order('name')
     ]);
     setDoctors((d || []) as unknown as Doctor[]);
@@ -72,13 +72,14 @@ export function DoctorsPage() {
       setForm({
         full_name: doctor.full_name, email: doctor.email || '', phone: doctor.phone || '',
         department_id: doctor.department_id || '', specialization: doctor.specialization || '',
+        qualification: doctor.qualification || '', registration_no: doctor.registration_no || '',
         consultation_fee: doctor.consultation_fee.toString(), experience_years: doctor.experience_years.toString(),
         available_days: doctor.available_days || [], available_time_start: doctor.available_time_start || '',
         available_time_end: doctor.available_time_end || '', is_active: doctor.is_active
       });
     } else {
       setEditingDoctor(null);
-      setForm({ full_name: '', email: '', phone: '', department_id: '', specialization: '', consultation_fee: '', experience_years: '', available_days: [], available_time_start: '', available_time_end: '', is_active: true });
+      setForm({ full_name: '', email: '', phone: '', department_id: '', specialization: '', qualification: '', registration_no: '', consultation_fee: '', experience_years: '', available_days: [], available_time_start: '', available_time_end: '', is_active: true });
     }
     setShowModal(true);
   }
@@ -197,7 +198,7 @@ export function DoctorsPage() {
                 </div>
                 <h3 className="mt-3 text-lg font-semibold text-gray-900">{d.full_name}</h3>
                 <p className="text-sm text-primary-600">{d.specialization}</p>
-                <p className="text-xs text-gray-500">{d.department?.name}</p>
+                <p className="text-xs text-gray-500">{d.department?.name}{d.qualification ? ` · ${d.qualification}` : ''}</p>
                 <div className="mt-3 flex flex-wrap gap-2 text-xs text-gray-600">
                   <span className="flex items-center gap-1"><IndianRupee className="h-3 w-3" /> {formatCurrency(d.consultation_fee)}</span>
                   <span className="flex items-center gap-1"><Clock className="h-3 w-3" /> {d.experience_years} yrs</span>
@@ -240,6 +241,8 @@ export function DoctorsPage() {
                 {specializations.map(s => <option key={s} value={s} />)}
               </datalist>
             </div>
+            <div><label className="label">Qualification</label><input value={form.qualification} onChange={e => setForm({...form, qualification: e.target.value})} className="input" placeholder="e.g. MBBS, MD (Medicine)" /></div>
+            <div><label className="label">Registration No.</label><input value={form.registration_no} onChange={e => setForm({...form, registration_no: e.target.value})} className="input" placeholder="e.g. UPMC/2014/12345" /></div>
             <div><label className="label">Consultation Fee (₹)</label><input type="number" value={form.consultation_fee} onChange={e => setForm({...form, consultation_fee: e.target.value})} className="input" /></div>
             <div><label className="label">Experience (Years)</label><input type="number" value={form.experience_years} onChange={e => setForm({...form, experience_years: e.target.value})} className="input" /></div>
             <div><label className="label">Available From</label><input type="time" value={form.available_time_start} onChange={e => setForm({...form, available_time_start: e.target.value})} className="input" /></div>

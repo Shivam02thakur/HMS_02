@@ -25,6 +25,8 @@ export interface Doctor {
   phone?: string;
   department_id?: string;
   specialization?: string;
+  qualification?: string;
+  registration_no?: string;
   consultation_fee: number;
   experience_years: number;
   available_days: string[];
@@ -133,10 +135,16 @@ export interface Prescription {
   appointment_id?: string;
   diagnosis?: string;
   notes?: string;
+  weight_kg?: number | null;
+  bp?: string | null;
+  pulse_bpm?: number | null;
+  temperature_f?: number | null;
+  spo2_percent?: number | null;
   created_at: string;
   patient?: Patient;
   doctor?: Doctor;
   items?: PrescriptionItem[];
+  lab_orders?: LabOrder[];
 }
 
 export interface PrescriptionItem {
@@ -168,6 +176,7 @@ export interface LabOrder {
   id: string;
   patient_id: string;
   doctor_id?: string;
+  prescription_id?: string | null;
   test_id: string;
   status: LabOrderStatus;
   ordered_at: string;
@@ -201,6 +210,7 @@ export interface Invoice {
   discount: number;
   total_amount: number;
   paid_amount: number;
+  waived_amount: number;
   status: InvoiceStatus;
   notes?: string | null;
   created_by?: string | null;
@@ -208,6 +218,7 @@ export interface Invoice {
   patient?: Patient;
   items?: InvoiceItem[];
   payments?: Payment[];
+  adjustments?: InvoiceAdjustment[];
 }
 
 export interface InvoiceItem {
@@ -219,6 +230,7 @@ export interface InvoiceItem {
   total_price: number;
   item_type?: 'consultation' | 'lab_test' | 'medicine' | 'bed_charge' | 'other';
   reference_id?: string;
+  dispensed?: boolean;
   created_at: string;
 }
 
@@ -236,6 +248,19 @@ export interface Payment {
   created_at: string;
 }
 
+export type AdjustmentType = 'WAIVER' | 'WRITE_OFF' | 'DISCOUNT' | 'CORRECTION';
+
+export interface InvoiceAdjustment {
+  id: string;
+  invoice_id: string;
+  amount: number;
+  adjustment_type: AdjustmentType;
+  reason: string;
+  created_by?: string;
+  created_at: string;
+  created_by_profile?: { full_name: string };
+}
+
 export interface DashboardStats {
   total_patients: number;
   total_doctors: number;
@@ -247,4 +272,3 @@ export interface DashboardStats {
   today_revenue: number;
   pending_invoices: number;
 }
-

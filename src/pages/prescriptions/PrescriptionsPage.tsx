@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRole } from '@/hooks/useRole';
 import { Modal } from '@/components/ui/Modal';
 import { SearchInput } from '@/components/ui/SearchInput';
 import { EmptyState } from '@/components/ui/EmptyState';
-import type { Prescription, Patient, Doctor, Medicine, PrescriptionItem } from '@/types';
-import { Plus, FileText, User, Stethoscope, Trash2 } from 'lucide-react';
+import type { Prescription, Patient, Doctor, Medicine, LabTest } from '@/types';
+import { Plus, FileText, Trash2, FlaskConical, Printer, AlertTriangle } from 'lucide-react';
 import { formatDate } from '@/lib/utils';
 import { useDebounce } from '@/hooks/useDebounce';
 
@@ -15,22 +16,47 @@ export function PrescriptionsPage() {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [medicines, setMedicines] = useState<Medicine[]>([]);
+  const [labTests, setLabTests] = useState<LabTest[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState('');
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
+  const [submitError, setSubmitError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const debouncedSearch = useDebounce(search, 300);
   const { user } = useAuth();
   const { isDoctor, isPharmacist } = useRole();
+  const navigate = useNavigate();
 
-  const [form, setForm] = useState({ patient_id: '', doctor_id: '', diagnosis: '', notes: '' });
+  const [form, setForm] = useState({
+    patient_id: '', doctor_id: '', diagnosis: '', notes: '',
+    weight_kg: '', bp: '', pulse_bpm: '', temperature_f: '', spo2_percent: '',
+  });
   const [items, setItems] = useState<{ medicine_id: string; dosage: string; frequency: string; duration: string; instructions: string }[]>([]);
+  const [selectedLabTestIds, setSelectedLabTestIds] = useState<string[]>([]);
+
+  // Prescriptions are created by whichever doctor is logged in by default --
+  // but doctors.id (used as prescriptions.doctor_id) is NOT the same as the
+  // logged-in profile id (doctors.user_id is what links to profiles.id).
+  // Falling back to `user?.id` directly, as this page used to do, silently
+  // wrote the wrong doctor_id whenever those two ids differed.
+  const myDoctorRecord = doctors.find(d => d.user_id === user?.id);
 
   useEffect(() => { fetchData(); }, [debouncedSearch]);
 
   async function fetchData() {
     setLoading(true);
-    let query = supabase.from('prescriptions').select('*, patient:patients(full_name), doctor:doctors(full_name), items:prescription_items(*, medicine:medicines(name))').order('created_at', { ascending: false });
-    const { data } = await query;
+    setFetchError('');
+    let query = supabase.from('prescriptions')
+      .select('*, patient:patients(full_name), doctor:doctors(full_name), items:prescription_items(*, medicine:medicines(name)), lab_orders(*, test:lab_tests(name))')
+      .order('created_at', { ascending: false });
+    const { data, error: prescriptionsError } = await query;
+    if (prescriptionsError) {
+      console.error('Failed to load prescriptions:', prescriptionsError);
+      setFetchError(`Could not load prescriptions: ${prescriptionsError.message}`);
+      setLoading(false);
+      return;
+    }
     let filtered = (data || []) as unknown as Prescription[];
     if (debouncedSearch) {
       filtered = filtered.filter(p =>
@@ -40,38 +66,92 @@ export function PrescriptionsPage() {
     }
     setPrescriptions(filtered);
 
-    const [{ data: p }, { data: d }, { data: m }] = await Promise.all([
+    // full_name, department, qualification, registration_no, etc. all come
+    // through on '*' -- this is the "automatically fetch doctor's data"
+    // piece: everything the printed prescription needs is loaded here once,
+    // keyed off doctor_id, rather than re-typed per prescription.
+    const [{ data: p, error: pErr }, { data: d, error: dErr }, { data: m, error: mErr }, { data: lt, error: ltErr }] = await Promise.all([
       supabase.from('patients').select('id, full_name').order('full_name'),
-      supabase.from('doctors').select('id, full_name').eq('is_active', true).order('full_name'),
-      supabase.from('medicines').select('id, name, stock_quantity').gt('stock_quantity', 0).order('name')
+      supabase.from('doctors').select('*, department:departments(name)').eq('is_active', true).order('full_name'),
+      supabase.from('medicines').select('id, name, stock_quantity').gt('stock_quantity', 0).order('name'),
+      supabase.from('lab_tests').select('id, name, code, price').order('name'),
     ]);
+    const refErr = pErr || dErr || mErr || ltErr;
+    if (refErr) {
+      console.error('Failed to load reference data:', refErr);
+      setFetchError(`Could not load form data: ${refErr.message}`);
+    }
     setPatients((p || []) as unknown as Patient[]);
     setDoctors((d || []) as unknown as Doctor[]);
     setMedicines((m || []) as unknown as Medicine[]);
+    setLabTests((lt || []) as unknown as LabTest[]);
     setLoading(false);
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const doctorId = form.doctor_id || user?.id;
-    if (!doctorId) return;
-    const { data: prescription } = await supabase.from('prescriptions').insert({
-      ...form, doctor_id: doctorId
+    setSubmitError('');
+    const doctorId = form.doctor_id || myDoctorRecord?.id;
+    if (!doctorId) {
+      setSubmitError('Select a doctor for this prescription.');
+      return;
+    }
+    setSubmitting(true);
+
+    const { patient_id, diagnosis, notes, weight_kg, bp, pulse_bpm, temperature_f, spo2_percent } = form;
+    const { data: prescription, error: prescriptionError } = await supabase.from('prescriptions').insert({
+      patient_id, diagnosis, notes,
+      doctor_id: doctorId,
+      weight_kg: weight_kg ? parseFloat(weight_kg) : null,
+      bp: bp || null,
+      pulse_bpm: pulse_bpm ? parseInt(pulse_bpm) : null,
+      temperature_f: temperature_f ? parseFloat(temperature_f) : null,
+      spo2_percent: spo2_percent ? parseInt(spo2_percent) : null,
     }).select().single();
 
-    if (prescription && items.length > 0) {
+    if (prescriptionError || !prescription) {
+      console.error('Failed to create prescription:', prescriptionError);
+      setSubmitError(prescriptionError?.message || 'Could not create prescription. Please try again.');
+      setSubmitting(false);
+      return;
+    }
+
+    if (items.length > 0) {
       const itemsToInsert = items.filter(i => i.medicine_id).map(i => ({
         ...i, prescription_id: prescription.id
       }));
       if (itemsToInsert.length > 0) {
-        await supabase.from('prescription_items').insert(itemsToInsert);
+        const { error: itemsError } = await supabase.from('prescription_items').insert(itemsToInsert);
+        if (itemsError) console.error('Failed to save prescription medicines:', itemsError);
       }
     }
 
+    // Lab tests ordered from here land in lab_orders (same table the
+    // Laboratory page reads) tagged with prescription_id, so the lab team
+    // sees them in their normal queue and the printed prescription can
+    // still show them under Investigations.
+    if (selectedLabTestIds.length > 0) {
+      const labOrdersToInsert = selectedLabTestIds.map(test_id => ({
+        patient_id, doctor_id: doctorId, test_id,
+        prescription_id: prescription.id,
+        status: 'PENDING' as const,
+        created_by: user?.id,
+      }));
+      const { error: labError } = await supabase.from('lab_orders').insert(labOrdersToInsert);
+      if (labError) console.error('Failed to order lab tests:', labError);
+    }
+
     setShowModal(false);
-    setForm({ patient_id: '', doctor_id: '', diagnosis: '', notes: '' });
+    setForm({ patient_id: '', doctor_id: '', diagnosis: '', notes: '', weight_kg: '', bp: '', pulse_bpm: '', temperature_f: '', spo2_percent: '' });
     setItems([]);
+    setSelectedLabTestIds([]);
+    setSubmitting(false);
     fetchData();
+    navigate(`/prescriptions/${prescription.id}`);
+  }
+
+  function toggleLabTest(testId: string) {
+    setSelectedLabTestIds(ids => ids.includes(testId) ? ids.filter(i => i !== testId) : [...ids, testId]);
   }
 
   function addItem() {
@@ -96,13 +176,25 @@ export function PrescriptionsPage() {
           <p className="text-gray-500">Manage prescriptions and medications</p>
         </div>
         {isDoctor() && (
-          <button onClick={() => { setShowModal(true); setItems([{ medicine_id: '', dosage: '', frequency: '', duration: '', instructions: '' }]); }} className="btn-primary">
+          <button onClick={() => {
+            setSubmitError('');
+            setForm(f => ({ ...f, doctor_id: myDoctorRecord?.id || '' }));
+            setItems([{ medicine_id: '', dosage: '', frequency: '', duration: '', instructions: '' }]);
+            setSelectedLabTestIds([]);
+            setShowModal(true);
+          }} className="btn-primary">
             <Plus className="h-4 w-4 mr-2" /> Create Prescription
           </button>
         )}
       </div>
 
       <div className="card">
+        {fetchError && (
+          <div className="mb-4 flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+            <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+            {fetchError}
+          </div>
+        )}
         <div className="mb-4">
           <SearchInput value={search} onChange={setSearch} placeholder="Search prescriptions..." />
         </div>
@@ -122,16 +214,19 @@ export function PrescriptionsPage() {
                       <p className="text-xs text-gray-500">Dr. {pr.doctor?.full_name} | {formatDate(pr.created_at)}</p>
                     </div>
                   </div>
-                  {pr.diagnosis && <span className="badge bg-blue-50 text-blue-700">{pr.diagnosis}</span>}
+                  <div className="flex items-center gap-2">
+                    {pr.diagnosis && <span className="badge bg-blue-50 text-blue-700">{pr.diagnosis}</span>}
+                    <button onClick={() => navigate(`/prescriptions/${pr.id}`)} className="btn-secondary text-xs py-1.5 px-3">
+                      <Printer className="h-3.5 w-3.5 mr-1" /> View / Print
+                    </button>
+                  </div>
                 </div>
                 <div className="mt-4 space-y-2">
-                  {pr.items?.map((item, i) => (
-                    <div key={i} className="flex items-center gap-3 rounded-lg bg-gray-50 p-3 text-sm">
-                      <span className="font-medium text-gray-900">{item.medicine?.name}</span>
-                      <span className="text-gray-500">{item.dosage}</span>
-                      <span className="text-gray-500">{item.frequency}</span>
-                      <span className="text-gray-500">{item.duration}</span>
-                      {item.instructions && <span className="text-gray-400">({item.instructions})</span>}
+                  {pr.lab_orders?.map((lo, i) => (
+                    <div key={i} className="flex items-center gap-2 rounded-lg bg-purple-50 p-3 text-sm">
+                      <FlaskConical className="h-3.5 w-3.5 text-purple-500" />
+                      <span className="font-medium text-gray-900">{lo.test?.name}</span>
+                      <span className="badge bg-purple-100 text-purple-700 text-[10px]">{lo.status}</span>
                     </div>
                   ))}
                 </div>
@@ -156,12 +251,41 @@ export function PrescriptionsPage() {
               <label className="label">Doctor</label>
               <select value={form.doctor_id} onChange={e => setForm({...form, doctor_id: e.target.value})} className="input">
                 <option value="">Select Doctor (Default: You)</option>
-                {doctors.map(d => <option key={d.id} value={d.id}>Dr. {d.full_name}</option>)}
+                {doctors.map(d => <option key={d.id} value={d.id}>Dr. {d.full_name}{d.specialization ? ` — ${d.specialization}` : ''}</option>)}
               </select>
+              <p className="mt-1 text-xs text-gray-400">
+                The prescription pulls the doctor's qualification, registration no. and department straight from their profile — nothing else to fill in here.
+              </p>
             </div>
             <div className="sm:col-span-2">
               <label className="label">Diagnosis</label>
               <input value={form.diagnosis} onChange={e => setForm({...form, diagnosis: e.target.value})} className="input" placeholder="Primary diagnosis..." />
+            </div>
+          </div>
+
+          <div>
+            <label className="label">Vitals (optional)</label>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+              <div>
+                <label className="text-xs text-gray-500">Weight (kg)</label>
+                <input type="number" step="0.1" value={form.weight_kg} onChange={e => setForm({...form, weight_kg: e.target.value})} className="input mt-1" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500">BP (mmHg)</label>
+                <input value={form.bp} onChange={e => setForm({...form, bp: e.target.value})} className="input mt-1" placeholder="120/80" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500">Pulse (bpm)</label>
+                <input type="number" value={form.pulse_bpm} onChange={e => setForm({...form, pulse_bpm: e.target.value})} className="input mt-1" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500">Temp (°F)</label>
+                <input type="number" step="0.1" value={form.temperature_f} onChange={e => setForm({...form, temperature_f: e.target.value})} className="input mt-1" />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500">SpO2 (%)</label>
+                <input type="number" value={form.spo2_percent} onChange={e => setForm({...form, spo2_percent: e.target.value})} className="input mt-1" />
+              </div>
             </div>
           </div>
 
@@ -205,13 +329,45 @@ export function PrescriptionsPage() {
           </div>
 
           <div>
-            <label className="label">Notes</label>
+            <label className="label">Lab Tests</label>
+            <div className="max-h-40 overflow-y-auto rounded-lg border border-gray-100 p-3">
+              {labTests.length === 0 ? <p className="text-sm text-gray-400">No lab tests configured.</p> : (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {labTests.map(t => (
+                    <label key={t.id} className="flex items-center gap-2 text-sm text-gray-700">
+                      <input
+                        type="checkbox"
+                        className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                        checked={selectedLabTestIds.includes(t.id)}
+                        onChange={() => toggleLabTest(t.id)}
+                      />
+                      <FlaskConical className="h-3.5 w-3.5 text-gray-400" />
+                      {t.name}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            <p className="mt-1 text-xs text-gray-400">Selected tests are sent to the lab queue and listed under Investigations on the printed prescription.</p>
+          </div>
+
+          <div>
+            <label className="label">Notes / Instructions / Investigations</label>
             <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} className="input" rows={2} />
           </div>
 
+          {submitError && (
+            <div className="flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+              <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+              {submitError}
+            </div>
+          )}
+
           <div className="flex justify-end gap-3 pt-2">
             <button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>
-            <button type="submit" className="btn-primary">Create Prescription</button>
+            <button type="submit" disabled={submitting} className="btn-primary disabled:cursor-not-allowed disabled:opacity-50">
+              {submitting ? 'Creating...' : 'Create Prescription'}
+            </button>
           </div>
         </form>
       </Modal>

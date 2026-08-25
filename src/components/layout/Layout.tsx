@@ -32,14 +32,14 @@ export function Layout() {
   const filteredNav = navItems.filter(item => hasRole(item.roles as any));
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="flex h-screen bg-gray-50 print:block print:h-auto">
       {/* Mobile sidebar overlay */}
       {sidebarOpen && (
         <div className="fixed inset-0 z-40 bg-black/50 lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
 
       {/* Sidebar */}
-      <aside className={`fixed inset-y-0 left-0 z-50 w-64 transform bg-white border-r border-gray-200 transition-transform duration-200 ease-in-out lg:static lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+      <aside className={`fixed inset-y-0 left-0 z-50 w-64 transform bg-white border-r border-gray-200 transition-transform duration-200 ease-in-out lg:static lg:translate-x-0 print:hidden ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="flex h-16 items-center gap-2 border-b border-gray-200 px-6">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary-600">
             <Stethoscope className="h-5 w-5 text-white" />
@@ -84,9 +84,9 @@ export function Layout() {
       </aside>
 
       {/* Main content */}
-      <div className="flex flex-1 flex-col min-w-0">
+      <div className="flex flex-1 flex-col min-w-0 print:block">
         {/* Header */}
-        <header className="flex h-16 items-center gap-4 border-b border-gray-200 bg-white px-4 lg:px-8">
+        <header className="flex h-16 items-center gap-4 border-b border-gray-200 bg-white px-4 lg:px-8 print:hidden">
           <button onClick={() => setSidebarOpen(true)} className="lg:hidden">
             <Menu className="h-6 w-6 text-gray-600" />
           </button>
@@ -99,7 +99,7 @@ export function Layout() {
         </header>
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto p-4 lg:p-8">
+        <main className="flex-1 overflow-y-auto p-4 lg:p-8 print:p-0 print:overflow-visible">
           <Outlet />
         </main>
       </div>
