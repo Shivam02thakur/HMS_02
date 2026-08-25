@@ -17,6 +17,7 @@ export function DashboardPage() {
   const [pendingLabs, setPendingLabs] = useState<LabOrder[]>([]);
   const [lowStock, setLowStock] = useState<Medicine[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -24,41 +25,51 @@ export function DashboardPage() {
   }, []);
 
   async function fetchDashboardData() {
+    setError(null);
     try {
       // Stats
-      const { data: statsData } = await supabase.rpc('get_dashboard_stats');
-      setStats((statsData ?? null) as unknown as DashboardStats | null);
+      const { data: statsData, error: statsError } = await supabase.rpc('get_dashboard_stats');
+      if (statsError) throw statsError;
+      // PostgREST can return this as either a raw object or an array
+      // containing one row, depending on how the function is declared.
+      // Unwrap it either way instead of assuming a shape.
+      const rawStats = Array.isArray(statsData) ? statsData[0] : statsData;
+      setStats((rawStats ?? null) as unknown as DashboardStats | null);
 
       // Today's appointments
       const today = new Date().toISOString().split('T')[0];
-      const { data: appts } = await supabase
+      const { data: appts, error: apptsError } = await supabase
         .from('appointments')
         .select('*, patient:patients(*), doctor:doctors(*)')
         .eq('appointment_date', today)
         .order('appointment_time')
         .limit(5);
+      if (apptsError) throw apptsError;
       setTodayAppointments((appts || []) as unknown as Appointment[]);
 
       // Pending lab orders
-      const { data: labs } = await supabase
+      const { data: labs, error: labsError } = await supabase
         .from('lab_orders')
         .select('*, patient:patients(*), test:lab_tests(*)')
         .eq('status', 'PENDING')
         .order('ordered_at', { ascending: false })
         .limit(5);
+      if (labsError) throw labsError;
       setPendingLabs((labs || []) as unknown as LabOrder[]);
 
       // Low stock medicines. PostgREST filters can't compare one column to
       // another (stock_quantity <= reorder_level), so pull a reasonable
       // window of stock ordered ascending and filter client-side.
-      const { data: medicines } = await supabase
+      const { data: medicines, error: medsError } = await supabase
         .from('medicines')
         .select('*')
         .order('stock_quantity')
         .limit(20);
+      if (medsError) throw medsError;
       setLowStock((medicines || []).filter(m => m.stock_quantity <= m.reorder_level).slice(0, 5));
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      setError(err?.message || 'Failed to load dashboard data.');
     } finally {
       setLoading(false);
     }
@@ -72,6 +83,13 @@ export function DashboardPage() {
         <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
         <p className="text-gray-500">Overview of hospital operations</p>
       </div>
+
+      {error && (
+        <div className="flex items-center gap-2 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+          <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+          Couldn't load dashboard data: {error}
+        </div>
+      )}
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
