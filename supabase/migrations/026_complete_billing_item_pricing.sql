@@ -14,7 +14,7 @@
 -- PROCEDURES (missing piece 1 of 2)
 -- ============================================
 CREATE TABLE IF NOT EXISTS procedures (
-  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   name TEXT NOT NULL,
   category TEXT,
   price DECIMAL(10,2) NOT NULL DEFAULT 0,
