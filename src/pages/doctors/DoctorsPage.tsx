@@ -2,12 +2,14 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useNavigate } from 'react-router-dom';
 import { useRole } from '@/hooks/useRole';
+import { useAuth } from '@/contexts/AuthContext';
 import { Modal } from '@/components/ui/Modal';
 import { SearchInput } from '@/components/ui/SearchInput';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { ReauthModal } from '@/components/ui/ReauthModal';
 import type { Doctor, Department } from '@/types';
-import { Plus, Stethoscope, Eye, Power, Edit, Clock, IndianRupee } from 'lucide-react';
+import { Plus, Stethoscope, Eye, Power, Edit, Clock, IndianRupee, Trash2 } from 'lucide-react';
 import { formatCurrency, DAYS_OF_WEEK } from '@/lib/utils';
 import { useDebounce } from '@/hooks/useDebounce';
 
@@ -43,9 +45,14 @@ export function DoctorsPage() {
   const [toggleError, setToggleError] = useState(''); 
   const [departmentFilter, setDepartmentFilter] = useState('');
   const [specializationFilter, setSpecializationFilter] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<Doctor | null>(null);
+  const [deleteBlockedInfo, setDeleteBlockedInfo] = useState<{ doctor: Doctor; appointments: number; prescriptions: number } | null>(null);
+  const [showReauth, setShowReauth] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
   const debouncedSearch = useDebounce(search, 300);
   const navigate = useNavigate();
   const { isAdmin } = useRole();
+  const { user } = useAuth();
 
   const [form, setForm] = useState({
     full_name: '', email: '', phone: '', department_id: '',
@@ -134,6 +141,41 @@ export function DoctorsPage() {
     fetchData();
   }
 
+  // Hard delete stays blocked while a doctor has real history (mirrors why
+  // the delete button became deactivate/activate in the first place -
+  // appointments.doctor_id and prescriptions.doctor_id are ON DELETE CASCADE,
+  // so deleting a doctor with either would silently wipe that history).
+  // Only offered as an option for a doctor added in error with zero
+  // appointments and zero prescriptions - genuinely nothing to lose.
+  async function handleDeleteClick(doctor: Doctor) {
+    setDeleteError('');
+    const [{ count: appointmentCount }, { count: prescriptionCount }] = await Promise.all([
+      supabase.from('appointments').select('id', { count: 'exact', head: true }).eq('doctor_id', doctor.id),
+      supabase.from('prescriptions').select('id', { count: 'exact', head: true }).eq('doctor_id', doctor.id),
+    ]);
+    if ((appointmentCount || 0) > 0 || (prescriptionCount || 0) > 0) {
+      setDeleteBlockedInfo({ doctor, appointments: appointmentCount || 0, prescriptions: prescriptionCount || 0 });
+      return;
+    }
+    setDeleteTarget(doctor);
+    setShowReauth(true);
+  }
+
+  async function handleConfirmedDelete() {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    setShowReauth(false);
+    const { error } = await supabase.from('doctors').delete().eq('id', target.id);
+    if (error) {
+      setDeleteError(`Could not delete Dr. ${target.full_name}. Please try again.`);
+      console.error(error);
+      setDeleteTarget(null);
+      return;
+    }
+    setDeleteTarget(null);
+    fetchData();
+  }
+
   const specializations = Array.from(
     new Set(doctors.map(d => d.specialization).filter((s): s is string => !!s))
   ).sort();
@@ -166,6 +208,13 @@ export function DoctorsPage() {
         <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2 flex items-center justify-between">
           {toggleError}
           <button onClick={() => setToggleError('')} className="ml-3 text-red-400 hover:text-red-600">✕</button>
+        </p>
+      )}
+
+      {deleteError && (
+        <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2 flex items-center justify-between">
+          {deleteError}
+          <button onClick={() => setDeleteError('')} className="ml-3 text-red-400 hover:text-red-600">✕</button>
         </p>
       )}
 
@@ -203,6 +252,9 @@ export function DoctorsPage() {
                         </button>
                         <button onClick={() => setToggleTarget(d)} className={`p-1.5 rounded-lg hover:bg-gray-50 ${d.is_active ? 'text-gray-400 hover:text-red-600' : 'text-gray-400 hover:text-green-600'}`} title={d.is_active ? 'Deactivate' : 'Activate'}>
                           <Power className="h-4 w-4" />
+                        </button>
+                        <button onClick={() => handleDeleteClick(d)} className="p-1.5 text-gray-400 hover:text-red-600 rounded-lg hover:bg-gray-50" title="Delete">
+                          <Trash2 className="h-4 w-4" />
                         </button>
                       </>
                     )}
@@ -295,6 +347,27 @@ export function DoctorsPage() {
           : `Activate Dr. ${toggleTarget?.full_name} again?`}
         confirmText={toggleTarget?.is_active ? 'Deactivate' : 'Activate'}
         isDanger={toggleTarget?.is_active}
+      />
+
+      <Modal isOpen={!!deleteBlockedInfo} onClose={() => setDeleteBlockedInfo(null)} title="Can't Delete Doctor" size="sm">
+        <div className="flex flex-col items-center text-center space-y-3">
+          <p className="text-sm text-gray-600">
+            Dr. {deleteBlockedInfo?.doctor.full_name} has {deleteBlockedInfo?.appointments} appointment(s) and{' '}
+            {deleteBlockedInfo?.prescriptions} prescription(s) on record. Deleting would permanently erase that
+            history, so it's blocked. Use Deactivate instead - the doctor is hidden from new bookings but their
+            history stays intact.
+          </p>
+          <button onClick={() => setDeleteBlockedInfo(null)} className="btn-primary w-full">Understood</button>
+        </div>
+      </Modal>
+
+      <ReauthModal
+        isOpen={showReauth}
+        onClose={() => { setShowReauth(false); setDeleteTarget(null); }}
+        onVerified={handleConfirmedDelete}
+        email={user?.email || ''}
+        title="Confirm Doctor Deletion"
+        message={`This will permanently delete Dr. ${deleteTarget?.full_name}. Re-enter your password to confirm.`}
       />
     </div>
   );
