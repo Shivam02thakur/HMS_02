@@ -87,6 +87,18 @@ export function DoctorsPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setFormError('');
+    // Native `required` on individual inputs covers most fields, but the
+    // Available Days checkbox group has no single input to attach it to,
+    // and "end time after start time" needs cross-field comparison HTML
+    // validation can't express - both are checked here before the request.
+    if (form.available_days.length === 0) {
+      setFormError('Select at least one available day.');
+      return;
+    }
+    if (form.available_time_start && form.available_time_end && form.available_time_end <= form.available_time_start) {
+      setFormError('Available To must be after Available From.');
+      return;
+    }
     const payload = {
       ...form,
       specialization: normalizeSpecialization(form.specialization),
@@ -223,11 +235,11 @@ export function DoctorsPage() {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div><label className="label">Full Name *</label><input required value={form.full_name} onChange={e => setForm({...form, full_name: e.target.value})} className="input" /></div>
-            <div><label className="label">Email</label><input type="email" value={form.email} onChange={e => setForm({...form, email: e.target.value})} className="input" /></div>
-            <div><label className="label">Phone</label><input value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} className="input" /></div>
+            <div><label className="label">Email *</label><input type="email" required value={form.email} onChange={e => setForm({...form, email: e.target.value})} className="input" /></div>
+            <div><label className="label">Phone *</label><input required pattern="[0-9]{10}" title="10-digit phone number" value={form.phone} onChange={e => setForm({...form, phone: e.target.value})} className="input" /></div>
             <div>
-              <label className="label">Department</label>
-              <select value={form.department_id} onChange={e => setForm({...form, department_id: e.target.value})} className="input">
+              <label className="label">Department *</label>
+              <select required value={form.department_id} onChange={e => setForm({...form, department_id: e.target.value})} className="input">
                 <option value="">Select Department</option>
                 {departments.map(d => <option key={d.id} value={d.id}>{d.name}{!d.is_active ? ' (Inactive)' : ''}</option>)}
               </select>
@@ -243,12 +255,12 @@ export function DoctorsPage() {
             </div>
             <div><label className="label">Qualification</label><input value={form.qualification} onChange={e => setForm({...form, qualification: e.target.value})} className="input" placeholder="e.g. MBBS, MD (Medicine)" /></div>
             <div><label className="label">Registration No.</label><input value={form.registration_no} onChange={e => setForm({...form, registration_no: e.target.value})} className="input" placeholder="e.g. UPMC/2014/12345" /></div>
-            <div><label className="label">Consultation Fee (₹)</label><input type="number" value={form.consultation_fee} onChange={e => setForm({...form, consultation_fee: e.target.value})} className="input" /></div>
+            <div><label className="label">Consultation Fee (₹) *</label><input type="number" required min="0" step="0.01" value={form.consultation_fee} onChange={e => setForm({...form, consultation_fee: e.target.value})} className="input" /></div>
             <div><label className="label">Experience (Years)</label><input type="number" value={form.experience_years} onChange={e => setForm({...form, experience_years: e.target.value})} className="input" /></div>
-            <div><label className="label">Available From</label><input type="time" value={form.available_time_start} onChange={e => setForm({...form, available_time_start: e.target.value})} className="input" /></div>
-            <div><label className="label">Available To</label><input type="time" value={form.available_time_end} onChange={e => setForm({...form, available_time_end: e.target.value})} className="input" /></div>
+            <div><label className="label">Available From *</label><input type="time" required value={form.available_time_start} onChange={e => setForm({...form, available_time_start: e.target.value})} className="input" /></div>
+            <div><label className="label">Available To *</label><input type="time" required value={form.available_time_end} onChange={e => setForm({...form, available_time_end: e.target.value})} className="input" /></div>
             <div className="sm:col-span-2">
-              <label className="label">Available Days</label>
+              <label className="label">Available Days *</label>
               <div className="flex flex-wrap gap-2">
                 {DAYS_OF_WEEK.map(day => (
                   <label key={day} className={`cursor-pointer rounded-lg border px-3 py-1.5 text-sm transition-colors ${form.available_days.includes(day) ? 'border-primary-500 bg-primary-50 text-primary-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
