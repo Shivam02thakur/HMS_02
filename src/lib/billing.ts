@@ -140,7 +140,11 @@ export async function dispenseUndispensedMedicines(invoiceId: string): Promise<s
 
   const failedItemIds: string[] = [];
   for (const item of toDispense || []) {
-    if (!item.reference_id) continue;
+    // quantity is nullable in the schema (legacy rows / a manual insert
+    // that skipped it) -- there's no sane amount to dispense for a
+    // missing/zero quantity, so treat it the same as a missing
+    // reference_id: skip it rather than guessing.
+    if (!item.reference_id || !item.quantity) continue;
     const { data: ok, error: dispenseError } = await supabase.rpc('dispense_medicine', {
       p_medicine_id: item.reference_id,
       p_quantity: item.quantity,
@@ -184,6 +188,14 @@ export async function restockDispensedMedicines(invoiceId: string): Promise<stri
   const failedItemIds: string[] = [];
   for (const item of dispensedItems || []) {
     if (!item.reference_id) continue;
+    if (!item.quantity) {
+      // Flagged dispensed but with no recorded quantity -- we can't know
+      // how much stock to return. Surface this as a failure (don't clear
+      // the dispensed flag) rather than silently leaving stock unreturned.
+      console.error(`Item ${item.id} is dispensed with no quantity recorded; cannot restock.`);
+      failedItemIds.push(item.id);
+      continue;
+    }
     const { data: ok, error: restockError } = await supabase.rpc('restock_medicine', {
       p_medicine_id: item.reference_id,
       p_quantity: item.quantity,
