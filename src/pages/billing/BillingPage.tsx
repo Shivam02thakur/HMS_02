@@ -236,6 +236,13 @@ export function BillingPage() {
         `For a partial payment, open the invoice and use "Record Payment" there instead.`
       );
       return;
+
+    if (amount > remainingBalance + 0.01) {
+      setPaymentError(
+        `OVERPAYMENT: Payment of ${formatCurrency(amount)} exceeds the remaining balance of ${formatCurrency(remainingBalance)}.`
+      );
+      return;
+    }
     }
 
     const { error } = await supabase.from('payments').insert({
@@ -510,7 +517,11 @@ export function BillingPage() {
             <textarea value={paymentForm.notes} onChange={e => setPaymentForm({...paymentForm, notes: e.target.value})} className="input" rows={2} />
           </div>
           {paymentError && (
-            <div className="flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+            <div className={
+              paymentError.startsWith('OVERPAYMENT')
+              ? 'flex items-center gap-2 rounded-lg bg-red-100 border-2 border-red-600 px-3 py-2 text-sm font-bold text-red-700'
+              : 'flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700'
+              }>
               {paymentError}
             </div>
           )}

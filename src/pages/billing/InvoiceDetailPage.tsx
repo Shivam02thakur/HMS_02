@@ -101,6 +101,17 @@ export function InvoiceDetailPage() {
       return;
     }
 
+    const remaining = Number(invoice.total_amount)
+      - Number(invoice.paid_amount)
+      - Number(invoice.waived_amount || 0);
+
+    if (amount > remaining + 0.01) {
+      setPaymentError(
+        `OVERPAYMENT: Payment of ${formatCurrency(amount)} exceeds the remaining balance of ${formatCurrency(remaining)}.`
+      );
+      return;
+    }
+
     const { error } = await supabase.from('payments').insert({
       invoice_id: id,
       amount,
@@ -586,7 +597,11 @@ export function InvoiceDetailPage() {
             <input type="date" required max={todayIso()} value={paymentForm.payment_date} onChange={e => setPaymentForm({...paymentForm, payment_date: e.target.value})} className="input" />
           </div>
           {paymentError && (
-            <div className="flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+            <div className={
+            paymentError.startsWith('OVERPAYMENT')
+              ? 'flex items-center gap-2 rounded-lg bg-red-100 border-2 border-red-600 px-3 py-2 text-sm font-bold text-red-700'
+              : 'flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700'
+          }>
               <AlertTriangle className="h-4 w-4 flex-shrink-0" />
               {paymentError}
             </div>
