@@ -51,7 +51,7 @@ export function DoctorDetailPage() {
               </p>
             )}
             <div className="mt-3 flex flex-wrap gap-4 text-sm text-gray-600">
-              <span className="flex items-center gap-1"><IndianRupee className="h-3.5 w-3.5" /> {formatCurrency(doctor.consultation_fee)}</span>
+              <span className="flex items-center gap-1"> {formatCurrency(doctor.consultation_fee)}</span>
               <span className="flex items-center gap-1"><Clock className="h-3.5 w-3.5" /> {doctor.experience_years} years exp.</span>
             </div>
             {doctor.available_days?.length > 0 && (

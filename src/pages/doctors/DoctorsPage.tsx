@@ -264,7 +264,7 @@ export function DoctorsPage() {
                 <p className="text-sm text-primary-600">{d.specialization}</p>
                 <p className="text-xs text-gray-500">{d.department?.name}{d.qualification ? ` · ${d.qualification}` : ''}</p>
                 <div className="mt-3 flex flex-wrap gap-2 text-xs text-gray-600">
-                  <span className="flex items-center gap-1"><IndianRupee className="h-3 w-3" /> {formatCurrency(d.consultation_fee)}</span>
+                  <span className="flex items-center gap-1"> {formatCurrency(d.consultation_fee)}</span>
                   <span className="flex items-center gap-1"><Clock className="h-3 w-3" /> {d.experience_years} yrs</span>
                 </div>
                 {d.available_days?.length > 0 && (
