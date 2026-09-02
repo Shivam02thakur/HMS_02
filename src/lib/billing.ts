@@ -34,7 +34,7 @@ export async function recalcInvoicePaymentState(invoiceId: string, totalAmount: 
   const settledAmount = paidAmount + waivedAmount;
 
   const status: InvoiceStatus =
-    totalAmount > 0 && settledAmount >= totalAmount - 0.01
+    settledAmount >= totalAmount - 0.01
       ? 'PAID'
       : settledAmount > 0
       ? 'PARTIAL'
