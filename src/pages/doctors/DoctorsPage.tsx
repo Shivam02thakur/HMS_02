@@ -9,7 +9,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { ReauthModal } from '@/components/ui/ReauthModal';
 import type { Doctor, Department } from '@/types';
-import { Plus, Stethoscope, Eye, Power, Edit, Clock, IndianRupee, Trash2 } from 'lucide-react';
+import { Plus, Stethoscope, Eye, Power, Edit, Clock, Trash2 } from 'lucide-react';
 import { formatCurrency, DAYS_OF_WEEK } from '@/lib/utils';
 import { useDebounce } from '@/hooks/useDebounce';
 

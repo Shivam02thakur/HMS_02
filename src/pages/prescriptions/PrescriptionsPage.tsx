@@ -47,7 +47,7 @@ export function PrescriptionsPage() {
   async function fetchData() {
     setLoading(true);
     setFetchError('');
-    let query = supabase.from('prescriptions')
+    const query = supabase.from('prescriptions')
       .select('*, patient:patients(full_name), doctor:doctors(full_name), items:prescription_items(*, medicine:medicines(name)), lab_orders(*, test:lab_tests(name))')
       .order('created_at', { ascending: false });
     const { data, error: prescriptionsError } = await query;

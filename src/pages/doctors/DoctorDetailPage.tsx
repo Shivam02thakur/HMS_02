@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import type { Doctor, Appointment } from '@/types';
-import { ArrowLeft, Stethoscope, Calendar, Clock, IndianRupee } from 'lucide-react';
+import { ArrowLeft, Stethoscope, Calendar, Clock} from 'lucide-react';
 import { formatDate, formatTime, formatCurrency, getStatusColor } from '@/lib/utils';
 
 export function DoctorDetailPage() {

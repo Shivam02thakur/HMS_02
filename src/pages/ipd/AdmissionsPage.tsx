@@ -51,7 +51,7 @@ export function AdmissionsPage() {
 
   async function fetchData() {
     setLoading(true);
-    let query = supabase.from('admissions').select('*, patient:patients(full_name), doctor:doctors(full_name), bed:beds(bed_number, room:rooms(room_number), ward:wards(name))').order('admission_date', { ascending: false });
+    const query = supabase.from('admissions').select('*, patient:patients(full_name), doctor:doctors(full_name), bed:beds(bed_number, room:rooms(room_number), ward:wards(name))').order('admission_date', { ascending: false });
     const { data } = await query;
     let filtered = (data || []) as unknown as Admission[];
     if (debouncedSearch) {
