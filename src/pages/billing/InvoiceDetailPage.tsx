@@ -15,6 +15,15 @@ import { recalcInvoicePaymentState, dispenseUndispensedMedicines, restockDispens
 
 type ItemType = 'medicine' | 'lab_test' | 'consultation' | 'bed_charge' | 'other';
 
+interface RxItemOption {
+  id: string;
+  medicineId: string;
+  medicineName: string;
+  prescriptionNumber: string;
+  cap: number;
+  remaining: number;
+}
+
 const ITEM_TYPE_LABELS: Record<ItemType, string> = {
   medicine: 'Medicine',
   lab_test: 'Lab Test',
@@ -563,6 +572,7 @@ export function InvoiceDetailPage() {
         isOpen={showItemModal}
         onClose={() => setShowItemModal(false)}
         invoiceId={id!}
+        patientId={invoice?.patient_id}
         medicines={medicines}
         labTests={labTests}
         doctors={doctors}
@@ -683,17 +693,22 @@ export function InvoiceDetailPage() {
 // items of the same type can be added back-to-back without reopening it.
 // ============================================================
 function AddItemModal({
-  isOpen, onClose, invoiceId, medicines, labTests, doctors, wards, onAdded,
+  isOpen, onClose, invoiceId, patientId, medicines, labTests, doctors, wards, onAdded,
 }: {
   isOpen: boolean;
   onClose: () => void;
   invoiceId: string;
+  patientId?: string;
   medicines: Medicine[];
   labTests: LabTest[];
   doctors: Doctor[];
   wards: Ward[];
   onAdded: () => void;
 }) {
+  const { user } = useAuth();
+  const { isPharmacist, isAdmin } = useRole();
+  const canOverrideQuantity = isPharmacist() || isAdmin();
+
   const [itemType, setItemType] = useState<ItemType>('medicine');
   const [search, setSearch] = useState('');
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -705,6 +720,70 @@ function AddItemModal({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [justAdded, setJustAdded] = useState<string | null>(null);
 
+  // Prescription-linked purchase: lets a medicine purchase trace back to
+  // the exact prescribed line it came from, so the remaining-quantity cap
+  // is enforced per prescription LINE, not per medicine in general (the
+  // same drug on two different prescriptions is two separate allowances).
+  // Purely optional -- this modal also handles ad-hoc, non-prescription
+  // medicine sales, which have no cap at all.
+  const [rxItems, setRxItems] = useState<RxItemOption[]>([]);
+  const [selectedRxItemId, setSelectedRxItemId] = useState('');
+  const [overrideReason, setOverrideReason] = useState('');
+
+  useEffect(() => {
+    if (!isOpen || itemType !== 'medicine' || !patientId) {
+      setRxItems([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      // Every not-yet-superseded prescription's medicine lines for this
+      // patient that actually have a quantity cap recorded (NULL-quantity
+      // lines predate this feature and stay uncapped/unlinkable here).
+      const { data: pItems, error: pItemsError } = await supabase
+        .from('prescription_items')
+        .select('id, medicine_id, quantity, medicine:medicines(name), prescription:prescriptions!inner(id, prescription_number, patient_id, superseded_by)')
+        .eq('prescription.patient_id', patientId)
+        .is('prescription.superseded_by', null)
+        .not('quantity', 'is', null);
+
+      if (pItemsError || !pItems || pItems.length === 0) {
+        if (pItemsError) console.error('Failed to load prescription items for linking:', pItemsError);
+        if (!cancelled) setRxItems([]);
+        return;
+      }
+
+      const ids = pItems.map((pi: any) => pi.id);
+      const { data: purchased, error: purchasedError } = await supabase
+        .from('invoice_items')
+        .select('prescription_item_id, quantity')
+        .in('prescription_item_id', ids);
+      if (purchasedError) console.error('Failed to load prior purchases against these prescriptions:', purchasedError);
+
+      const purchasedByItem = new Map<string, number>();
+      (purchased || []).forEach((row: any) => {
+        purchasedByItem.set(row.prescription_item_id, (purchasedByItem.get(row.prescription_item_id) || 0) + (row.quantity || 0));
+      });
+
+      const options: RxItemOption[] = pItems.map((pi: any) => {
+        const cap = pi.quantity as number;
+        const alreadyPurchased = purchasedByItem.get(pi.id) || 0;
+        return {
+          id: pi.id,
+          medicineId: pi.medicine_id,
+          medicineName: pi.medicine?.name || 'Unknown medicine',
+          prescriptionNumber: pi.prescription?.prescription_number || '—',
+          cap,
+          remaining: Math.max(0, cap - alreadyPurchased),
+        };
+      });
+      if (!cancelled) setRxItems(options);
+    })();
+    return () => { cancelled = true; };
+  }, [isOpen, itemType, patientId]);
+
+  const selectedRxItem = rxItems.find(r => r.id === selectedRxItemId);
+
   function resetSelection() {
     setSearch('');
     setDropdownOpen(false);
@@ -713,6 +792,8 @@ function AddItemModal({
     setOtherDescription('');
     setOtherPrice('');
     setSubmitError(null);
+    setSelectedRxItemId('');
+    setOverrideReason('');
   }
 
   function handleClose() {
@@ -726,6 +807,17 @@ function AddItemModal({
     setItemType(t);
     resetSelection();
     setJustAdded(null);
+  }
+
+  function handleRxItemChange(rxItemId: string) {
+    setSelectedRxItemId(rxItemId);
+    setOverrideReason('');
+    const rxItem = rxItems.find(r => r.id === rxItemId);
+    if (rxItem) {
+      setSelectedId(rxItem.medicineId);
+      setDropdownOpen(false);
+      setSearch('');
+    }
   }
 
   const selectedMedicine = medicines.find(m => m.id === selectedId);
@@ -785,13 +877,27 @@ function AddItemModal({
 
   const total = computed ? computed.quantity * computed.unit_price : 0;
   const insufficientStock = itemType === 'medicine' && selectedMedicine && computed ? computed.quantity > selectedMedicine.stock_quantity : false;
-  const canSubmit = computed !== null && total > 0 && !insufficientStock;
+
+  // Default, self-service-safe path: a purchase can't exceed what's left
+  // on the linked prescription line. The exception is a deliberate,
+  // auditable override -- pharmacist/admin only, requires a reason -- for
+  // cases like lost or damaged medication where the patient has a genuine
+  // ongoing need beyond what was originally capped.
+  const exceedsRemaining = itemType === 'medicine' && selectedRxItem && computed ? computed.quantity > selectedRxItem.remaining : false;
+  const needsOverride = exceedsRemaining;
+  const overrideProvided = needsOverride && canOverrideQuantity && overrideReason.trim().length > 0;
+
+  const canSubmit = computed !== null && total > 0 && !insufficientStock && (!needsOverride || overrideProvided);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!computed || !canSubmit) return;
     setSubmitting(true);
     setSubmitError(null);
+
+    const overrideFields = overrideProvided
+      ? { quantity_override_reason: overrideReason.trim(), quantity_override_by: user?.id, quantity_override_at: new Date().toISOString() }
+      : {};
 
     const { error: insertError } = await supabase
       .from('invoice_items')
@@ -803,6 +909,8 @@ function AddItemModal({
         total_price: computed.quantity * computed.unit_price,
         item_type: itemType,
         reference_id: computed.reference_id,
+        prescription_item_id: itemType === 'medicine' ? (selectedRxItemId || null) : null,
+        ...overrideFields,
       });
 
     if (insertError) {
@@ -858,6 +966,22 @@ function AddItemModal({
         {/* Medicine */}
         {itemType === 'medicine' && (
           <div>
+            {rxItems.length > 0 && (
+              <div className="mb-3">
+                <label className="label">Link to Prescription (optional)</label>
+                <select value={selectedRxItemId} onChange={e => handleRxItemChange(e.target.value)} className="input">
+                  <option value="">Not linked to a prescription</option>
+                  {rxItems.map(r => (
+                    <option key={r.id} value={r.id}>
+                      {r.prescriptionNumber} · {r.medicineName} — {r.remaining} of {r.cap} remaining
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-gray-400">
+                  Linking checks this purchase against what's left on that specific prescription line.
+                </p>
+              </div>
+            )}
             <label className="label">Medicine *</label>
             {selectedMedicine ? (
               <SelectedChip
@@ -949,6 +1073,30 @@ function AddItemModal({
           <div className="flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
             <AlertTriangle className="h-4 w-4 flex-shrink-0" />
             Insufficient stock. Available: {selectedMedicine.stock_quantity}
+          </div>
+        )}
+
+        {exceedsRemaining && selectedRxItem && (
+          <div className="space-y-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+              <span>
+                This exceeds the {selectedRxItem.remaining} remaining on {selectedRxItem.prescriptionNumber}.
+                {!canOverrideQuantity && ' Ask a pharmacist or admin to authorize a purchase beyond the prescribed quantity (e.g. for lost or damaged medication).'}
+              </span>
+            </div>
+            {canOverrideQuantity && (
+              <div>
+                <label className="text-xs font-medium text-amber-800">Reason for override (required) *</label>
+                <input
+                  value={overrideReason}
+                  onChange={e => setOverrideReason(e.target.value)}
+                  className="input mt-1"
+                  placeholder="e.g. Original medication lost, patient has ongoing need"
+                />
+                <p className="mt-1 text-xs text-amber-700">This will be recorded against your name and today's date for audit.</p>
+              </div>
+            )}
           </div>
         )}
 

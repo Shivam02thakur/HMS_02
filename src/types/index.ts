@@ -141,10 +141,23 @@ export interface Prescription {
   temperature_f?: number | null;
   spo2_percent?: number | null;
   created_at: string;
+  // A prescription is immutable from the moment it's created. The only way
+  // to change anything is a brand-new prescription written during a later
+  // consultation that explicitly names the earlier one it revises
+  // (revision_of) -- same doctor, same patient, enforced at the database
+  // level. superseded_by/superseded_at are set on the OLD prescription the
+  // instant a revision of it is created; a superseded prescription is no
+  // longer purchasable against, regardless of remaining quantity.
+  prescription_number?: string | null;
+  revision_of?: string | null;
+  superseded_by?: string | null;
+  superseded_at?: string | null;
   patient?: Patient;
   doctor?: Doctor;
   items?: PrescriptionItem[];
   lab_orders?: LabOrder[];
+  revision_of_prescription?: Pick<Prescription, 'id' | 'prescription_number' | 'created_at'> | null;
+  superseded_by_prescription?: Pick<Prescription, 'id' | 'prescription_number' | 'created_at'> | null;
 }
 
 export interface PrescriptionItem {
@@ -155,6 +168,10 @@ export interface PrescriptionItem {
   frequency: string;
   duration: string;
   instructions?: string;
+  // Total units prescribed on this line (e.g. "10 tablets"). Nullable:
+  // existing rows predate this field and have no honest historical value --
+  // NULL is treated as "no cap recorded" (unlimited), never coerced to 0.
+  quantity?: number | null;
   created_at: string;
   medicine?: Medicine;
 }
@@ -231,6 +248,16 @@ export interface InvoiceItem {
   item_type?: 'consultation' | 'lab_test' | 'medicine' | 'bed_charge' | 'other';
   reference_id?: string;
   dispensed?: boolean;
+  // Links a medicine purchase back to the exact prescribed line it came
+  // from, so "remaining quantity" is computed per prescription line, not
+  // per medicine in general.
+  prescription_item_id?: string | null;
+  // All-or-nothing: a purchase beyond the prescribed line's remaining
+  // quantity is only allowed via this deliberate, auditable override
+  // (pharmacist/admin only), never partially recorded.
+  quantity_override_reason?: string | null;
+  quantity_override_by?: string | null;
+  quantity_override_at?: string | null;
   created_at: string;
 }
 
@@ -264,6 +291,7 @@ export interface InvoiceAdjustment {
 export interface DashboardStats {
   total_patients: number;
   total_doctors: number;
+  total_departments: number;
   today_appointments: number;
   pending_lab_orders: number;
   occupied_beds: number;
@@ -271,4 +299,6 @@ export interface DashboardStats {
   low_stock_medicines: number;
   today_revenue: number;
   pending_invoices: number;
+  today_admissions: number;
+  today_discharges: number;
 }

@@ -81,3 +81,25 @@ export const TIME_SLOTS = [
 export const DAYS_OF_WEEK = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
 export const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
+
+// Specialization is free text (no lookup table). Trimming + title-casing on
+// save keeps "cardiology" / "Cardiology " / "CARDIOLOGY" from becoming three
+// separate values that the filter dropdown (and search) would then treat as
+// distinct. Shared between DoctorsPage (Add/Edit Doctor) and SettingsPage
+// (Create User -> Doctor) so both paths normalize identically.
+// Acronyms that should stay fully uppercase rather than being title-cased
+// word-by-word (default rule would turn "ENT" into "Ent"). Extend this list
+// as new abbreviated specializations get added.
+const SPECIALIZATION_ACRONYMS = new Set(['ENT', 'ICU', 'ECG', 'OBGYN', 'ER', 'OPD']);
+
+export function normalizeSpecialization(s: string): string {
+  return s.trim().replace(/\s+/g, ' ')
+    .split(' ')
+    .map(w => {
+      if (!w) return w;
+      const upper = w.toUpperCase();
+      if (SPECIALIZATION_ACRONYMS.has(upper)) return upper;
+      return w[0].toUpperCase() + w.slice(1).toLowerCase();
+    })
+    .join(' ');
+}

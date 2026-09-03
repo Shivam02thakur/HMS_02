@@ -7,9 +7,22 @@ import { Modal } from '@/components/ui/Modal';
 import { SearchInput } from '@/components/ui/SearchInput';
 import { EmptyState } from '@/components/ui/EmptyState';
 import type { Prescription, Patient, Doctor, Medicine, LabTest } from '@/types';
-import { Plus, FileText, Trash2, FlaskConical, Printer, AlertTriangle } from 'lucide-react';
+import { Plus, FileText, Trash2, FlaskConical, Printer, AlertTriangle, History } from 'lucide-react';
 import { formatDate } from '@/lib/utils';
 import { useDebounce } from '@/hooks/useDebounce';
+
+// A prescription is immutable from the moment it's created. The only way
+// to change anything is a brand-new prescription, written during a later
+// consultation, that explicitly names which earlier prescription (by the
+// same doctor, for the same patient) it revises -- never an automatic
+// side effect of time passing or another visit happening. "No — this is
+// unrelated" is always the default so an unrelated later visit never
+// accidentally supersedes a still-valid earlier one.
+const UNRELATED = '';
+
+type PriorPrescription = Pick<Prescription, 'id' | 'prescription_number' | 'diagnosis' | 'created_at' | 'weight_kg' | 'bp' | 'pulse_bpm' | 'temperature_f' | 'spo2_percent'> & {
+  items: { medicine_id: string; dosage: string; frequency: string; duration: string; instructions: string | null; quantity: number | null }[];
+};
 
 export function PrescriptionsPage() {
   const [prescriptions, setPrescriptions] = useState<Prescription[]>([]);
@@ -32,8 +45,10 @@ export function PrescriptionsPage() {
     patient_id: '', doctor_id: '', diagnosis: '', notes: '',
     weight_kg: '', bp: '', pulse_bpm: '', temperature_f: '', spo2_percent: '',
   });
-  const [items, setItems] = useState<{ medicine_id: string; dosage: string; frequency: string; duration: string; instructions: string }[]>([]);
+  const [items, setItems] = useState<{ medicine_id: string; dosage: string; frequency: string; duration: string; instructions: string; quantity: string }[]>([]);
   const [selectedLabTestIds, setSelectedLabTestIds] = useState<string[]>([]);
+  const [priorPrescriptions, setPriorPrescriptions] = useState<PriorPrescription[]>([]);
+  const [selectedRevisionId, setSelectedRevisionId] = useState(UNRELATED);
 
   // Prescriptions are created by whichever doctor is logged in by default --
   // but doctors.id (used as prescriptions.doctor_id) is NOT the same as the
@@ -41,8 +56,34 @@ export function PrescriptionsPage() {
   // Falling back to `user?.id` directly, as this page used to do, silently
   // wrote the wrong doctor_id whenever those two ids differed.
   const myDoctorRecord = doctors.find(d => d.user_id === user?.id);
+  // Works whether an admin is picking the doctor manually (form.doctor_id)
+  // or a doctor is creating their own prescription (falls back to their
+  // own doctor record).
+  const effectiveDoctorId = form.doctor_id || myDoctorRecord?.id || '';
 
   useEffect(() => { fetchData(); }, [debouncedSearch]);
+
+  // Revision is only ever an explicit, deliberate choice the doctor makes
+  // when writing a new prescription -- never an automatic side effect of
+  // another visit happening. This fetches candidates for that choice: every
+  // not-yet-superseded prescription for this patient written by this same
+  // effective doctor. A different patient or doctor selection re-runs this
+  // and resets any previous pick, since a picked prescription may no longer
+  // apply to the newly-selected patient/doctor pair.
+  useEffect(() => {
+    setSelectedRevisionId(UNRELATED);
+    if (!form.patient_id || !effectiveDoctorId) {
+      setPriorPrescriptions([]);
+      return;
+    }
+    supabase.from('prescriptions')
+      .select('id, prescription_number, diagnosis, created_at, weight_kg, bp, pulse_bpm, temperature_f, spo2_percent, items:prescription_items(medicine_id, dosage, frequency, duration, instructions, quantity)')
+      .eq('patient_id', form.patient_id)
+      .eq('doctor_id', effectiveDoctorId)
+      .is('superseded_by', null)
+      .order('created_at', { ascending: false })
+      .then(({ data }) => setPriorPrescriptions((data || []) as unknown as PriorPrescription[]));
+  }, [form.patient_id, effectiveDoctorId]);
 
   async function fetchData() {
     setLoading(true);
@@ -107,6 +148,11 @@ export function PrescriptionsPage() {
       pulse_bpm: pulse_bpm ? parseInt(pulse_bpm) : null,
       temperature_f: temperature_f ? parseFloat(temperature_f) : null,
       spo2_percent: spo2_percent ? parseInt(spo2_percent) : null,
+      // Only ever set from an explicit pick in the revision picker below --
+      // never inferred from "same patient, same doctor, later visit" on its
+      // own. The database enforces same-doctor/same-patient and atomically
+      // flips the old prescription to superseded (migration 031).
+      revision_of: selectedRevisionId || null,
     }).select().single();
 
     if (prescriptionError || !prescription) {
@@ -118,7 +164,10 @@ export function PrescriptionsPage() {
 
     if (items.length > 0) {
       const itemsToInsert = items.filter(i => i.medicine_id).map(i => ({
-        ...i, prescription_id: prescription.id
+        medicine_id: i.medicine_id, dosage: i.dosage, frequency: i.frequency,
+        duration: i.duration, instructions: i.instructions,
+        quantity: i.quantity ? parseFloat(i.quantity) : null,
+        prescription_id: prescription.id,
       }));
       if (itemsToInsert.length > 0) {
         const { error: itemsError } = await supabase.from('prescription_items').insert(itemsToInsert);
@@ -145,6 +194,7 @@ export function PrescriptionsPage() {
     setForm({ patient_id: '', doctor_id: '', diagnosis: '', notes: '', weight_kg: '', bp: '', pulse_bpm: '', temperature_f: '', spo2_percent: '' });
     setItems([]);
     setSelectedLabTestIds([]);
+    setSelectedRevisionId(UNRELATED);
     setSubmitting(false);
     fetchData();
     navigate(`/prescriptions/${prescription.id}`);
@@ -155,7 +205,7 @@ export function PrescriptionsPage() {
   }
 
   function addItem() {
-    setItems([...items, { medicine_id: '', dosage: '', frequency: '', duration: '', instructions: '' }]);
+    setItems([...items, { medicine_id: '', dosage: '', frequency: '', duration: '', instructions: '', quantity: '' }]);
   }
 
   function updateItem(index: number, field: string, value: string) {
@@ -166,6 +216,31 @@ export function PrescriptionsPage() {
 
   function removeItem(index: number) {
     setItems(items.filter((_, i) => i !== index));
+  }
+
+  // Prefills diagnosis, vitals, and every medicine line from the picked
+  // prior prescription -- each line stays individually editable/removable
+  // from there (a continued medicine is re-written with a fresh quantity;
+  // its old remaining balance never carries over).
+  function applyRevision(id: string) {
+    setSelectedRevisionId(id);
+    if (!id) return;
+    const prior = priorPrescriptions.find(p => p.id === id);
+    if (!prior) return;
+    setForm(f => ({
+      ...f,
+      diagnosis: prior.diagnosis || '',
+      weight_kg: prior.weight_kg != null ? String(prior.weight_kg) : '',
+      bp: prior.bp || '',
+      pulse_bpm: prior.pulse_bpm != null ? String(prior.pulse_bpm) : '',
+      temperature_f: prior.temperature_f != null ? String(prior.temperature_f) : '',
+      spo2_percent: prior.spo2_percent != null ? String(prior.spo2_percent) : '',
+    }));
+    setItems(prior.items.map(i => ({
+      medicine_id: i.medicine_id, dosage: i.dosage, frequency: i.frequency,
+      duration: i.duration, instructions: i.instructions || '',
+      quantity: i.quantity != null ? String(i.quantity) : '',
+    })));
   }
 
   return (
@@ -179,8 +254,9 @@ export function PrescriptionsPage() {
           <button onClick={() => {
             setSubmitError('');
             setForm(f => ({ ...f, doctor_id: myDoctorRecord?.id || '' }));
-            setItems([{ medicine_id: '', dosage: '', frequency: '', duration: '', instructions: '' }]);
+            setItems([{ medicine_id: '', dosage: '', frequency: '', duration: '', instructions: '', quantity: '' }]);
             setSelectedLabTestIds([]);
+            setSelectedRevisionId(UNRELATED);
             setShowModal(true);
           }} className="btn-primary">
             <Plus className="h-4 w-4 mr-2" /> Create Prescription
@@ -211,10 +287,20 @@ export function PrescriptionsPage() {
                     </div>
                     <div>
                       <p className="text-sm font-medium text-gray-900">{pr.patient?.full_name}</p>
-                      <p className="text-xs text-gray-500">Dr. {pr.doctor?.full_name} | {formatDate(pr.created_at)}</p>
+                      <p className="text-xs text-gray-500">
+                        {pr.prescription_number ? `${pr.prescription_number} · ` : ''}Dr. {pr.doctor?.full_name} | {formatDate(pr.created_at)}
+                      </p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
+                    {pr.revision_of_prescription && (
+                      <span className="badge bg-amber-50 text-amber-700 flex items-center gap-1" title={`Revises ${pr.revision_of_prescription.prescription_number}`}>
+                        <History className="h-3 w-3" /> Revision
+                      </span>
+                    )}
+                    {pr.superseded_by && (
+                      <span className="badge bg-red-50 text-red-700">Superseded</span>
+                    )}
                     {pr.diagnosis && <span className="badge bg-blue-50 text-blue-700">{pr.diagnosis}</span>}
                     <button onClick={() => navigate(`/prescriptions/${pr.id}`)} className="btn-secondary text-xs py-1.5 px-3">
                       <Printer className="h-3.5 w-3.5 mr-1" /> View / Print
@@ -263,6 +349,27 @@ export function PrescriptionsPage() {
             </div>
           </div>
 
+          {priorPrescriptions.length > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <label className="label flex items-center gap-1.5 text-amber-800">
+                <History className="h-3.5 w-3.5" /> Is this a revision of an earlier prescription?
+              </label>
+              <select value={selectedRevisionId} onChange={e => applyRevision(e.target.value)} className="input mt-1">
+                <option value={UNRELATED}>No — this is unrelated, start fresh</option>
+                {priorPrescriptions.map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.prescription_number} · {formatDate(p.created_at)}{p.diagnosis ? ` · ${p.diagnosis}` : ''}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-amber-700">
+                Picking one prefills its diagnosis, vitals and medicines below (all editable) and marks the earlier
+                prescription as superseded the moment this one is saved. Only prescriptions you wrote for this
+                patient that haven't already been superseded are listed.
+              </p>
+            </div>
+          )}
+
           <div>
             <label className="label">Vitals (optional)</label>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
@@ -296,7 +403,7 @@ export function PrescriptionsPage() {
             </div>
             <div className="space-y-3">
               {items.map((item, index) => (
-                <div key={index} className="grid grid-cols-1 gap-3 sm:grid-cols-5 items-end rounded-lg border border-gray-100 p-3">
+                <div key={index} className="grid grid-cols-1 gap-3 sm:grid-cols-6 items-end rounded-lg border border-gray-100 p-3">
                   <div className="sm:col-span-2">
                     <label className="text-xs text-gray-500">Medicine</label>
                     <select value={item.medicine_id} onChange={e => updateItem(index, 'medicine_id', e.target.value)} className="input mt-1">
@@ -312,10 +419,14 @@ export function PrescriptionsPage() {
                     <label className="text-xs text-gray-500">Frequency</label>
                     <input value={item.frequency} onChange={e => updateItem(index, 'frequency', e.target.value)} className="input mt-1" placeholder="e.g. 2x/day" />
                   </div>
+                  <div>
+                    <label className="text-xs text-gray-500">Duration</label>
+                    <input value={item.duration} onChange={e => updateItem(index, 'duration', e.target.value)} className="input mt-1" placeholder="e.g. 5 days" />
+                  </div>
                   <div className="flex gap-2">
                     <div className="flex-1">
-                      <label className="text-xs text-gray-500">Duration</label>
-                      <input value={item.duration} onChange={e => updateItem(index, 'duration', e.target.value)} className="input mt-1" placeholder="e.g. 5 days" />
+                      <label className="text-xs text-gray-500">Qty (total)</label>
+                      <input type="number" min="0" step="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="input mt-1" placeholder="e.g. 10" />
                     </div>
                     {items.length > 1 && (
                       <button type="button" onClick={() => removeItem(index)} className="mb-1 p-1 text-red-400 hover:text-red-600">

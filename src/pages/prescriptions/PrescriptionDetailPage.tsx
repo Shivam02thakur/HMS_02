@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import type { Prescription } from '@/types';
-import { ArrowLeft, Printer, Phone, Mail, Clock } from 'lucide-react';
+import { ArrowLeft, Printer, Phone, Mail, Clock, AlertTriangle, History } from 'lucide-react';
 import { formatDate, calculateAge } from '@/lib/utils';
 import { HOSPITAL_INFO } from '@/lib/hospitalConfig';
 
@@ -21,8 +21,9 @@ export function PrescriptionDetailPage() {
     // One query pulls everything the letterhead needs: patient details,
     // the doctor's full credentials (qualification, reg. no, department,
     // availability -- fetched automatically off doctor_id, nothing
-    // re-entered by hand), the medicine list, and any lab tests ordered
-    // from this prescription.
+    // re-entered by hand), the medicine list, any lab tests ordered from
+    // this prescription, and the joined revision lineage in both
+    // directions (shown by number, not raw UUID).
     const { data, error } = await supabase
       .from('prescriptions')
       .select(`
@@ -30,7 +31,9 @@ export function PrescriptionDetailPage() {
         patient:patients(*),
         doctor:doctors(*, department:departments(name)),
         items:prescription_items(*, medicine:medicines(name)),
-        lab_orders(*, test:lab_tests(name, code))
+        lab_orders(*, test:lab_tests(name, code)),
+        revision_of_prescription:prescriptions!prescriptions_revision_of_fkey(id, prescription_number, created_at),
+        superseded_by_prescription:prescriptions!prescriptions_superseded_by_fkey(id, prescription_number, created_at)
       `)
       .eq('id', id)
       .single();
@@ -53,7 +56,7 @@ export function PrescriptionDetailPage() {
     </div>
   );
 
-  const { patient, doctor, items, lab_orders, weight_kg, bp, pulse_bpm, temperature_f, spo2_percent } = prescription;
+  const { patient, doctor, items, lab_orders, weight_kg, bp, pulse_bpm, temperature_f, spo2_percent, revision_of_prescription, superseded_by_prescription } = prescription;
   const age = calculateAge(patient?.date_of_birth);
   const sex = patient?.gender ? patient.gender.charAt(0).toUpperCase() + patient.gender.slice(1) : null;
   const ageSex = [age !== null ? `${age} yrs` : null, sex].filter(Boolean).join(' / ');
@@ -72,6 +75,37 @@ export function PrescriptionDetailPage() {
           <Printer className="h-3.5 w-3.5 mr-1" /> Print / Save as PDF
         </button>
       </div>
+
+      {/* Hard warning: shown both on-screen AND in print. Printing a
+          superseded prescription without this would be actively
+          misleading to whoever reads the paper copy. */}
+      {superseded_by_prescription && (
+        <div className="mx-auto flex max-w-3xl items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800 print:rounded-none">
+          <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+          <span>
+            This prescription has been superseded by{' '}
+            <button type="button" onClick={() => navigate(`/prescriptions/${superseded_by_prescription.id}`)} className="font-semibold underline print:no-underline">
+              {superseded_by_prescription.prescription_number}
+            </button>{' '}
+            ({formatDate(superseded_by_prescription.created_at)}) and is no longer valid or purchasable.
+          </span>
+        </div>
+      )}
+
+      {/* Soft note: screen-only, since revising doesn't need flagging on
+          the paper copy the way supersession does. */}
+      {revision_of_prescription && (
+        <div className="mx-auto flex max-w-3xl items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 print:hidden">
+          <History className="mt-0.5 h-4 w-4 flex-shrink-0" />
+          <span>
+            This prescription revises{' '}
+            <button type="button" onClick={() => navigate(`/prescriptions/${revision_of_prescription.id}`)} className="font-semibold underline">
+              {revision_of_prescription.prescription_number}
+            </button>{' '}
+            ({formatDate(revision_of_prescription.created_at)}).
+          </span>
+        </div>
+      )}
 
       {/* Printable prescription document */}
       <div className="card print:border-0 print:shadow-none print:p-0 print:rounded-none mx-auto max-w-3xl print:max-w-none">
@@ -102,6 +136,7 @@ export function PrescriptionDetailPage() {
           <div><span className="text-gray-500">Patient Name: </span><span className="font-semibold text-gray-900">{patient?.full_name}</span></div>
           <div><span className="text-gray-500">Age/Sex: </span><span className="font-medium text-gray-900">{ageSex || '—'}</span></div>
           <div><span className="text-gray-500">Date: </span><span className="font-medium text-gray-900">{formatDate(prescription.created_at)}</span></div>
+          <div className="col-span-3"><span className="text-gray-500">Prescription No: </span><span className="font-medium text-gray-900">{prescription.prescription_number || '—'}</span></div>
         </div>
 
         {/* Diagnosis & vitals */}
@@ -134,6 +169,7 @@ export function PrescriptionDetailPage() {
                   <th className="py-1.5 pr-2">Dosage</th>
                   <th className="py-1.5 pr-2">Frequency</th>
                   <th className="py-1.5 pr-2">Duration</th>
+                  <th className="py-1.5 pr-2">Qty</th>
                 </tr>
               </thead>
               <tbody>
@@ -147,6 +183,7 @@ export function PrescriptionDetailPage() {
                     <td className="py-1.5 pr-2 text-gray-700">{item.dosage}</td>
                     <td className="py-1.5 pr-2 text-gray-700">{item.frequency}</td>
                     <td className="py-1.5 pr-2 text-gray-700">{item.duration}</td>
+                    <td className="py-1.5 pr-2 text-gray-700">{item.quantity ?? '—'}</td>
                   </tr>
                 ))}
               </tbody>

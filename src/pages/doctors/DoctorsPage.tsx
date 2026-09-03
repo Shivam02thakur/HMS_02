@@ -9,29 +9,9 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { ReauthModal } from '@/components/ui/ReauthModal';
 import type { Doctor, Department } from '@/types';
-import { Plus, Stethoscope, Eye, Power, Edit, Clock, Trash2 } from 'lucide-react';
-import { formatCurrency, DAYS_OF_WEEK } from '@/lib/utils';
+import { Plus, Stethoscope, Eye, Power, Edit, Clock, IndianRupee, Trash2 } from 'lucide-react';
+import { formatCurrency, DAYS_OF_WEEK, normalizeSpecialization } from '@/lib/utils';
 import { useDebounce } from '@/hooks/useDebounce';
-
-// Specialization is free text (no lookup table). Trimming + title-casing on
-// save keeps "cardiology" / "Cardiology " / "CARDIOLOGY" from becoming three
-// separate values that the filter dropdown (and search) would then treat as distinct.
-// Acronyms that should stay fully uppercase rather than being title-cased
-// word-by-word (default rule would turn "ENT" into "Ent"). Extend this list
-// as new abbreviated specializations get added.
-const SPECIALIZATION_ACRONYMS = new Set(['ENT', 'ICU', 'ECG', 'OBGYN', 'ER', 'OPD']);
-
-function normalizeSpecialization(s: string): string {
-  return s.trim().replace(/\s+/g, ' ')
-    .split(' ')
-    .map(w => {
-      if (!w) return w;
-      const upper = w.toUpperCase();
-      if (SPECIALIZATION_ACRONYMS.has(upper)) return upper;
-      return w[0].toUpperCase() + w.slice(1).toLowerCase();
-    })
-    .join(' ');
-}
 
 export function DoctorsPage() {
   const [doctors, setDoctors] = useState<Doctor[]>([]);
