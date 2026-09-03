@@ -6,7 +6,7 @@ import type { DashboardStats, Appointment, LabOrder, Medicine } from '@/types';
 import {
   Users, Stethoscope, CalendarDays, FlaskConical,
   BedDouble, Pill, Receipt, AlertTriangle, TrendingUp,
-  Clock, CheckCircle, XCircle
+  Clock, CheckCircle, XCircle, Building2, LogIn, LogOut
 } from 'lucide-react';
 import { formatDate, formatTime, formatCurrency, formatNumber, getStatusColor } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
@@ -104,6 +104,12 @@ export function DashboardPage() {
         <StatCard title="Occupied Beds" value={`${stats?.occupied_beds || 0} / ${stats?.total_beds || 0}`} icon={BedDouble} color="blue" />
         <StatCard title="Low Stock Items" value={formatNumber(stats?.low_stock_medicines || 0)} icon={Pill} color="yellow" />
         <StatCard title="Pending Invoices" value={formatNumber(stats?.pending_invoices || 0)} icon={Receipt} color="red" />
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard title="Departments" value={formatNumber(stats?.total_departments || 0)} icon={Building2} color="purple" />
+        <StatCard title="Admissions Today" value={formatNumber(stats?.today_admissions || 0)} icon={LogIn} color="green" />
+        <StatCard title="Discharges Today" value={formatNumber(stats?.today_discharges || 0)} icon={LogOut} color="blue" />
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
