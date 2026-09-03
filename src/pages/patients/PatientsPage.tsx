@@ -5,7 +5,8 @@ import { useRole } from '@/hooks/useRole';
 import { Modal } from '@/components/ui/Modal';
 import { SearchInput } from '@/components/ui/SearchInput';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { ReauthModal } from '@/components/ui/ReauthModal';
+import { useAuth } from '@/contexts/AuthContext';
 import type { Patient } from '@/types';
 import { Plus, Search, User, Phone, Calendar, Trash2, Eye, Edit } from 'lucide-react';
 import { formatDate, BLOOD_GROUPS } from '@/lib/utils';
@@ -17,10 +18,14 @@ export function PatientsPage() {
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
-  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Patient | null>(null);
+  const [showReauth, setShowReauth] = useState(false);
+  const [deleteBlockedInfo, setDeleteBlockedInfo] = useState<{ patient: Patient; counts: Record<string, number> } | null>(null);
+  const [deleteError, setDeleteError] = useState('');
   const debouncedSearch = useDebounce(search, 300);
   const navigate = useNavigate();
   const { isReceptionist } = useRole();
+  const { user } = useAuth();
 
   const [form, setForm] = useState({
     full_name: '', email: '', phone: '', date_of_birth: '',
@@ -92,10 +97,46 @@ export function PatientsPage() {
     fetchPatients();
   }
 
-  async function handleDelete() {
-    if (!deleteId) return;
-    await supabase.from('patients').delete().eq('id', deleteId);
-    setDeleteId(null);
+  // patients cascades (ON DELETE CASCADE, 001_schema.sql) into appointments,
+  // admissions, prescriptions, lab_orders, and invoices -- five tables, so
+  // one accidental delete could erase a patient's entire medical and
+  // billing history in one action. Blocked outright if any dependent
+  // records exist; password re-authentication required for the genuinely-
+  // safe case (matches DoctorsPage.tsx's pattern).
+  async function handleDeleteClick(patient: Patient) {
+    setDeleteError('');
+    const [
+      { count: appointments }, { count: admissions }, { count: prescriptions },
+      { count: labOrders }, { count: invoices },
+    ] = await Promise.all([
+      supabase.from('appointments').select('id', { count: 'exact', head: true }).eq('patient_id', patient.id),
+      supabase.from('admissions').select('id', { count: 'exact', head: true }).eq('patient_id', patient.id),
+      supabase.from('prescriptions').select('id', { count: 'exact', head: true }).eq('patient_id', patient.id),
+      supabase.from('lab_orders').select('id', { count: 'exact', head: true }).eq('patient_id', patient.id),
+      supabase.from('invoices').select('id', { count: 'exact', head: true }).eq('patient_id', patient.id),
+    ]);
+    const counts = {
+      Appointments: appointments || 0, Admissions: admissions || 0, Prescriptions: prescriptions || 0,
+      'Lab Orders': labOrders || 0, Invoices: invoices || 0,
+    };
+    if (Object.values(counts).some(c => c > 0)) {
+      setDeleteBlockedInfo({ patient, counts });
+      return;
+    }
+    setDeleteTarget(patient);
+    setShowReauth(true);
+  }
+
+  async function handleConfirmedDelete() {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    setShowReauth(false);
+    const { error } = await supabase.from('patients').delete().eq('id', target.id);
+    if (error) {
+      setDeleteError(`Could not delete ${target.full_name}. Please try again.`);
+      console.error(error);
+    }
+    setDeleteTarget(null);
     fetchPatients();
   }
 
@@ -169,7 +210,7 @@ export function PatientsPage() {
                             <button onClick={() => openModal(p)} className="p-1 text-gray-400 hover:text-blue-600">
                               <Edit className="h-4 w-4" />
                             </button>
-                            <button onClick={() => setDeleteId(p.id)} className="p-1 text-gray-400 hover:text-red-600">
+                            <button onClick={() => handleDeleteClick(p)} className="p-1 text-gray-400 hover:text-red-600">
                               <Trash2 className="h-4 w-4" />
                             </button>
                           </>
@@ -248,7 +289,34 @@ export function PatientsPage() {
         </form>
       </Modal>
 
-      <ConfirmDialog isOpen={!!deleteId} onClose={() => setDeleteId(null)} onConfirm={handleDelete} title="Delete Patient" message="Are you sure you want to delete this patient? This action cannot be undone." isDanger />
+      {deleteError && (
+        <div className="fixed bottom-4 right-4 rounded-lg bg-red-50 px-4 py-2 text-sm text-red-700 shadow-lg">{deleteError}</div>
+      )}
+
+      <Modal isOpen={!!deleteBlockedInfo} onClose={() => setDeleteBlockedInfo(null)} title="Can't Delete Patient" size="sm">
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">
+            {deleteBlockedInfo?.patient.full_name} has dependent records that would be permanently erased:
+          </p>
+          <ul className="space-y-1 text-sm">
+            {deleteBlockedInfo && Object.entries(deleteBlockedInfo.counts).filter(([, c]) => c > 0).map(([label, c]) => (
+              <li key={label} className="flex justify-between rounded bg-gray-50 px-3 py-1.5">
+                <span className="text-gray-700">{label}</span><span className="font-medium text-gray-900">{c}</span>
+              </li>
+            ))}
+          </ul>
+          <button onClick={() => setDeleteBlockedInfo(null)} className="btn-primary w-full">Understood</button>
+        </div>
+      </Modal>
+
+      <ReauthModal
+        isOpen={showReauth}
+        onClose={() => { setShowReauth(false); setDeleteTarget(null); }}
+        onVerified={handleConfirmedDelete}
+        email={user?.email || ''}
+        title="Confirm Patient Deletion"
+        message={`This will permanently delete ${deleteTarget?.full_name} and cannot be undone. Re-enter your password to confirm.`}
+      />
     </div>
   );
 }
