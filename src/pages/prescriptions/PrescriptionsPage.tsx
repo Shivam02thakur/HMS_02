@@ -88,7 +88,11 @@ export function PrescriptionsPage() {
   async function fetchData() {
     setLoading(true);
     setFetchError('');
-    const query = supabase.from('prescriptions')
+    // revision_of_prescription is fetched as a plain follow-up query below,
+    // not a `prescriptions!fk_name(...)` embed -- see PrescriptionDetailPage.tsx
+    // for why (that self-referencing embed pattern breaks whenever
+    // PostgREST's schema cache hasn't been reloaded since the last migration).
+    let query = supabase.from('prescriptions')
       .select('*, patient:patients(full_name), doctor:doctors(full_name), items:prescription_items(*, medicine:medicines(name)), lab_orders(*, test:lab_tests(name))')
       .order('created_at', { ascending: false });
     const { data, error: prescriptionsError } = await query;
@@ -99,6 +103,21 @@ export function PrescriptionsPage() {
       return;
     }
     let filtered = (data || []) as unknown as Prescription[];
+
+    const revisionIds = [...new Set(filtered.map(p => p.revision_of).filter(Boolean))] as string[];
+    if (revisionIds.length > 0) {
+      const { data: lineageRows, error: lineageError } = await supabase
+        .from('prescriptions')
+        .select('id, prescription_number, created_at')
+        .in('id', revisionIds);
+      if (lineageError) console.error('Failed to load prescription lineage:', lineageError);
+      const lineageById = new Map((lineageRows || []).map(r => [r.id, r]));
+      filtered = filtered.map(p => ({
+        ...p,
+        revision_of_prescription: p.revision_of ? lineageById.get(p.revision_of) || null : null,
+      }));
+    }
+
     if (debouncedSearch) {
       filtered = filtered.filter(p =>
         p.patient?.full_name?.toLowerCase().includes(debouncedSearch.toLowerCase()) ||

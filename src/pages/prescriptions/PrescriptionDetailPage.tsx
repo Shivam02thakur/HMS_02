@@ -21,9 +21,17 @@ export function PrescriptionDetailPage() {
     // One query pulls everything the letterhead needs: patient details,
     // the doctor's full credentials (qualification, reg. no, department,
     // availability -- fetched automatically off doctor_id, nothing
-    // re-entered by hand), the medicine list, any lab tests ordered from
-    // this prescription, and the joined revision lineage in both
-    // directions (shown by number, not raw UUID).
+    // re-entered by hand), the medicine list, and any lab tests ordered
+    // from this prescription.
+    //
+    // The revision lineage (revision_of_prescription / superseded_by_prescription)
+    // is deliberately NOT embedded here via a `prescriptions!fk_name(...)`
+    // hint. Self-referencing embeds like that depend on PostgREST's schema
+    // cache already knowing about the FK, which goes stale after every
+    // migration until it's manually reloaded -- that's what was causing
+    // "Could not find a relationship between 'prescriptions' and
+    // 'prescriptions'". Plain follow-up queries below need nothing but the
+    // columns to exist, so they can't break that way.
     const { data, error } = await supabase
       .from('prescriptions')
       .select(`
@@ -31,20 +39,35 @@ export function PrescriptionDetailPage() {
         patient:patients(*),
         doctor:doctors(*, department:departments(name)),
         items:prescription_items(*, medicine:medicines(name)),
-        lab_orders(*, test:lab_tests(name, code)),
-        revision_of_prescription:prescriptions!prescriptions_revision_of_fkey(id, prescription_number, created_at),
-        superseded_by_prescription:prescriptions!prescriptions_superseded_by_fkey(id, prescription_number, created_at)
+        lab_orders(*, test:lab_tests(name, code))
       `)
       .eq('id', id)
       .single();
 
-    if (error) {
+    if (error || !data) {
       console.error('Failed to load prescription:', error);
-      setFetchError(error.message);
+      setFetchError(error?.message || 'Prescription not found');
       setPrescription(null);
-    } else {
-      setPrescription(data as unknown as Prescription);
+      setLoading(false);
+      return;
     }
+
+    const lineageIds = [data.revision_of, data.superseded_by].filter(Boolean) as string[];
+    let lineageById = new Map<string, { id: string; prescription_number: string | null; created_at: string }>();
+    if (lineageIds.length > 0) {
+      const { data: lineageRows, error: lineageError } = await supabase
+        .from('prescriptions')
+        .select('id, prescription_number, created_at')
+        .in('id', lineageIds);
+      if (lineageError) console.error('Failed to load prescription lineage:', lineageError);
+      lineageById = new Map((lineageRows || []).map(r => [r.id, r]));
+    }
+
+    setPrescription({
+      ...(data as unknown as Prescription),
+      revision_of_prescription: data.revision_of ? lineageById.get(data.revision_of) || null : null,
+      superseded_by_prescription: data.superseded_by ? lineageById.get(data.superseded_by) || null : null,
+    });
     setLoading(false);
   }
 
