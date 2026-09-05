@@ -1,0 +1,2721 @@
+diff --git a/src/App.tsx b/src/App.tsx
+index 2db1c32..352c372 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -19,6 +19,7 @@ import { InvoiceDetailPage } from '@/pages/billing/InvoiceDetailPage';
+ import { IPDPage } from '@/pages/ipd/IPDPage';
+ import { AdmissionsPage } from '@/pages/ipd/AdmissionsPage';
+ import { SettingsPage } from '@/pages/SettingsPage';
++import { HygienePage } from '@/pages/hygiene/HygienePage';
+ import type { UserRole } from '@/types';
+ import './index.css';
+ 
+@@ -65,8 +66,13 @@ function AppRoutes() {
+         <Route path="billing/:id" element={<InvoiceDetailPage />} />
+         <Route path="ipd" element={<IPDPage />} />
+         <Route path="ipd/admissions" element={<AdmissionsPage />} />
++        <Route path="hygiene" element={
++          <RoleRoute roles={['admin', 'receptionist']}>
++            <HygienePage />
++          </RoleRoute>
++        } />
+         <Route path="settings" element={
+-          <RoleRoute roles={['admin']}>
++          <RoleRoute roles={['admin', 'doctor']}>
+             <SettingsPage />
+           </RoleRoute>
+         } />
+diff --git a/src/components/layout/Layout.tsx b/src/components/layout/Layout.tsx
+index fa12196..b1a668a 100644
+--- a/src/components/layout/Layout.tsx
++++ b/src/components/layout/Layout.tsx
+@@ -5,8 +5,9 @@ import { useRole } from '@/hooks/useRole';
+ import {
+   LayoutDashboard, Users, Stethoscope, CalendarDays, FileText,
+   Pill, FlaskConical, Receipt, BedDouble, Settings, LogOut,
+-  Menu, X, ChevronDown, ChevronRight, UserCircle, Building2
++  Menu, X, ChevronDown, ChevronRight, UserCircle, Building2, Sparkles
+ } from 'lucide-react';
++import { NotificationBell } from '@/components/layout/NotificationBell';
+ 
+ const navItems = [
+   { path: '/', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin', 'receptionist', 'doctor', 'pharmacist', 'lab_technician'] },
+@@ -19,7 +20,8 @@ const navItems = [
+   { path: '/laboratory', label: 'Laboratory', icon: FlaskConical, roles: ['admin', 'doctor', 'lab_technician'] },
+   { path: '/billing', label: 'Billing', icon: Receipt, roles: ['admin', 'receptionist'] },
+   { path: '/ipd', label: 'IPD / Wards', icon: BedDouble, roles: ['admin', 'receptionist', 'doctor'] },
+-  { path: '/settings', label: 'Settings', icon: Settings, roles: ['admin'] },
++  { path: '/hygiene', label: 'Hygiene', icon: Sparkles, roles: ['admin', 'receptionist'] },
++  { path: '/settings', label: 'Settings', icon: Settings, roles: ['admin', 'doctor'] },
+ ];
+ 
+ export function Layout() {
+@@ -106,6 +108,7 @@ export function Layout() {
+             <span className="text-sm font-medium text-gray-700 tabular-nums hidden sm:block">
+               {now.toLocaleTimeString('en-IN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+             </span>
++            <NotificationBell />
+           </div>
+         </header>
+ 
+diff --git a/src/components/layout/NotificationBell.tsx b/src/components/layout/NotificationBell.tsx
+new file mode 100644
+index 0000000..4c45e08
+--- /dev/null
++++ b/src/components/layout/NotificationBell.tsx
+@@ -0,0 +1,115 @@
++import { useEffect, useRef, useState } from 'react';
++import { Bell } from 'lucide-react';
++import { supabase } from '@/lib/supabase';
++import { useAuth } from '@/contexts/AuthContext';
++import type { Notification } from '@/types';
++import { formatDate } from '@/lib/utils';
++
++// Polling every 30 seconds, deliberately not a realtime subscription --
++// nothing here is time-critical enough to need one, and polling is far
++// simpler to reason about (no subscription lifecycle to manage/clean up
++// across navigation).
++const POLL_INTERVAL_MS = 30_000;
++
++export function NotificationBell() {
++  const { user } = useAuth();
++  const [open, setOpen] = useState(false);
++  const [notifications, setNotifications] = useState<Notification[]>([]);
++  const containerRef = useRef<HTMLDivElement>(null);
++
++  useEffect(() => {
++    if (!user?.id) return;
++    fetchNotifications();
++    const interval = setInterval(fetchNotifications, POLL_INTERVAL_MS);
++    return () => clearInterval(interval);
++  }, [user?.id]);
++
++  useEffect(() => {
++    function handleClickOutside(e: MouseEvent) {
++      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
++        setOpen(false);
++      }
++    }
++    document.addEventListener('mousedown', handleClickOutside);
++    return () => document.removeEventListener('mousedown', handleClickOutside);
++  }, []);
++
++  async function fetchNotifications() {
++    if (!user?.id) return;
++    const { data, error } = await supabase
++      .from('notifications')
++      .select('*')
++      .eq('user_id', user.id)
++      .order('created_at', { ascending: false })
++      .limit(20);
++    if (error) {
++      console.error('Failed to load notifications:', error);
++      return;
++    }
++    setNotifications((data || []) as unknown as Notification[]);
++  }
++
++  async function markRead(id: string) {
++    setNotifications(ns => ns.map(n => n.id === id ? { ...n, is_read: true } : n));
++    const { error } = await supabase.from('notifications').update({ is_read: true }).eq('id', id);
++    if (error) console.error('Failed to mark notification read:', error);
++  }
++
++  async function markAllRead() {
++    const unreadIds = notifications.filter(n => !n.is_read).map(n => n.id);
++    if (unreadIds.length === 0) return;
++    setNotifications(ns => ns.map(n => ({ ...n, is_read: true })));
++    const { error } = await supabase.from('notifications').update({ is_read: true }).in('id', unreadIds);
++    if (error) console.error('Failed to mark all notifications read:', error);
++  }
++
++  const unreadCount = notifications.filter(n => !n.is_read).length;
++
++  return (
++    <div className="relative" ref={containerRef}>
++      <button onClick={() => setOpen(o => !o)} className="relative rounded-full p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700">
++        <Bell className="h-5 w-5" />
++        {unreadCount > 0 && (
++          <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
++            {unreadCount > 9 ? '9+' : unreadCount}
++          </span>
++        )}
++      </button>
++
++      {open && (
++        <div className="absolute right-0 z-20 mt-2 w-80 rounded-lg border border-gray-200 bg-white shadow-lg">
++          <div className="flex items-center justify-between border-b border-gray-100 px-4 py-2">
++            <span className="text-sm font-semibold text-gray-900">Notifications</span>
++            {unreadCount > 0 && (
++              <button onClick={markAllRead} className="text-xs font-medium text-primary-600 hover:text-primary-700">
++                Mark all read
++              </button>
++            )}
++          </div>
++          <div className="max-h-96 overflow-y-auto">
++            {notifications.length === 0 ? (
++              <p className="px-4 py-6 text-center text-sm text-gray-400">No notifications yet</p>
++            ) : (
++              notifications.map(n => (
++                <button
++                  key={n.id}
++                  onClick={() => markRead(n.id)}
++                  className={`block w-full border-b border-gray-50 px-4 py-3 text-left last:border-b-0 hover:bg-gray-50 ${n.is_read ? '' : 'bg-blue-50/50'}`}
++                >
++                  <div className="flex items-start gap-2">
++                    {!n.is_read && <span className="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-blue-500" />}
++                    <div className={n.is_read ? 'ml-3.5' : ''}>
++                      <p className="text-sm font-medium text-gray-900">{n.title}</p>
++                      <p className="mt-0.5 text-xs text-gray-600">{n.body}</p>
++                      <p className="mt-1 text-[10px] text-gray-400">{formatDate(n.created_at)}</p>
++                    </div>
++                  </div>
++                </button>
++              ))
++            )}
++          </div>
++        </div>
++      )}
++    </div>
++  );
++}
+diff --git a/src/lib/billing.ts b/src/lib/billing.ts
+index 77cf948..e1f5411 100644
+--- a/src/lib/billing.ts
++++ b/src/lib/billing.ts
+@@ -230,4 +230,156 @@ export async function restockDispensedMedicines(invoiceId: string): Promise<stri
+  *
+  *   alter table invoice_items
+  *     add column if not exists dispensed boolean not null default false;
+- */
+\ No newline at end of file
++ */
++
++// ============================================================
++// Billing episodes -- one coherent encounter (an admission, an OPD
++// visit, or a standalone walk-in), one invoice. See migration 034 for
++// why "find the patient's current invoice" isn't a safe substitute for
++// this.
++// ============================================================
++
++export type EpisodeContext =
++  | { episode_type: 'ADMISSION'; patient_id: string; admission_id: string }
++  | { episode_type: 'OPD_VISIT'; patient_id: string; appointment_id: string }
++  | { episode_type: 'WALK_IN'; patient_id: string };
++
++export interface EpisodeInvoiceResult {
++  episodeId: string;
++  invoiceId: string;
++}
++
++/**
++ * Finds the open episode for this admission/appointment/walk-in patient,
++ * or creates one (with an empty invoice) if none exists. Called
++ * identically from every charge-creating action -- appointment
++ * completion, admission creation, ward transfer/discharge billing, the
++ * prescribed-medicines picker -- so they all converge on the same
++ * invoice for the same episode rather than each maintaining its own
++ * lookup logic.
++ *
++ * Handles the benign race where two near-simultaneous calls both attempt
++ * to create the same episode: the partial unique indexes in migration
++ * 034 are exactly what would fire in that case (Postgres error 23505,
++ * unique_violation). Rather than failing the whole charge over a race
++ * that isn't really an error, this catches that specific case and
++ * re-queries for the episode that won.
++ */
++export async function findOrCreateEpisodeInvoice(
++  context: EpisodeContext,
++  createdBy?: string
++): Promise<EpisodeInvoiceResult | { error: string }> {
++  const matchColumn =
++    context.episode_type === 'ADMISSION' ? 'admission_id' :
++    context.episode_type === 'OPD_VISIT' ? 'appointment_id' :
++    null;
++  const matchValue =
++    context.episode_type === 'ADMISSION' ? context.admission_id :
++    context.episode_type === 'OPD_VISIT' ? context.appointment_id :
++    null;
++
++  let query = supabase.from('billing_episodes').select('id, invoices(id)').eq('status', 'OPEN');
++  if (matchColumn && matchValue) {
++    query = query.eq(matchColumn, matchValue);
++  } else {
++    query = query.eq('patient_id', context.patient_id).eq('episode_type', 'WALK_IN');
++  }
++  const { data: existing, error: findError } = await query.maybeSingle();
++  if (findError) return { error: findError.message };
++  if (existing) {
++    const invoice = Array.isArray(existing.invoices) ? existing.invoices[0] : existing.invoices;
++    if (invoice) return { episodeId: existing.id, invoiceId: (invoice as { id: string }).id };
++    // Episode exists but somehow has no invoice yet (shouldn't normally
++    // happen -- created together below -- but don't assume): create one.
++    const { data: newInvoice, error: invErr } = await supabase.from('invoices').insert({
++      patient_id: context.patient_id, episode_id: existing.id, created_by: createdBy,
++    }).select('id').single();
++    if (invErr || !newInvoice) return { error: invErr?.message || 'Could not create invoice for existing episode.' };
++    return { episodeId: existing.id, invoiceId: newInvoice.id };
++  }
++
++  const { data: newEpisode, error: createError } = await supabase.from('billing_episodes').insert({
++    patient_id: context.patient_id,
++    episode_type: context.episode_type,
++    admission_id: context.episode_type === 'ADMISSION' ? context.admission_id : null,
++    appointment_id: context.episode_type === 'OPD_VISIT' ? context.appointment_id : null,
++    created_by: createdBy,
++  }).select('id').single();
++
++  if (createError) {
++    // 23505 = unique_violation. Another near-simultaneous call won the
++    // race and created the episode first -- that's not a failure, it's
++    // exactly the case the partial unique indexes exist to catch.
++    // Re-query for the episode that won instead of surfacing an error.
++    if (createError.code === '23505') {
++      return findOrCreateEpisodeInvoice(context, createdBy);
++    }
++    return { error: createError.message };
++  }
++  if (!newEpisode) return { error: 'Could not create billing episode.' };
++
++  const { data: newInvoice, error: invErr } = await supabase.from('invoices').insert({
++    patient_id: context.patient_id, episode_id: newEpisode.id, created_by: createdBy,
++  }).select('id').single();
++  if (invErr || !newInvoice) return { error: invErr?.message || 'Could not create invoice for new episode.' };
++
++  return { episodeId: newEpisode.id, invoiceId: newInvoice.id };
++}
++
++/**
++ * Deliberately simple: sets status = 'CLOSED', nothing else. It never
++ * touches invoice payment status -- the two lifecycles (can new charges
++ * still land here vs. how much has been paid) are genuinely independent
++ * by design, not just by accident.
++ */
++export async function closeEpisode(episodeId: string): Promise<string | null> {
++  const { error } = await supabase.from('billing_episodes')
++    .update({ status: 'CLOSED', closed_at: new Date().toISOString() })
++    .eq('id', episodeId);
++  return error ? error.message : null;
++}
++
++/**
++ * Computes and inserts the invoice line for a ward-history segment that
++ * has just been closed (by a transfer or a discharge -- the bed trigger,
++ * migration 035, closes the segment; this is the separate
++ * application-level charge computation that follows it). Marks the
++ * segment with the resulting invoice_item_id so it's never billed twice.
++ */
++export async function billClosedWardSegment(admissionId: string, episodeInvoiceId: string): Promise<string | null> {
++  const { data: segment, error: segErr } = await supabase
++    .from('admission_ward_history')
++    .select('id, daily_rate, started_at, ended_at, invoice_item_id, ward:wards(name, ward_type)')
++    .eq('admission_id', admissionId)
++    .not('ended_at', 'is', null)
++    .is('invoice_item_id', null)
++    .order('ended_at', { ascending: false })
++    .limit(1)
++    .maybeSingle();
++
++  if (segErr) return segErr.message;
++  if (!segment) return null; // nothing new to bill -- not an error
++
++  const started = new Date(segment.started_at).getTime();
++  const ended = new Date(segment.ended_at as string).getTime();
++  const days = Math.max(1, Math.ceil((ended - started) / (1000 * 60 * 60 * 24)));
++  const ward = Array.isArray(segment.ward) ? segment.ward[0] : segment.ward;
++
++  const { data: item, error: itemErr } = await supabase.from('invoice_items').insert({
++    invoice_id: episodeInvoiceId,
++    item_type: 'bed_charge',
++    description: `Room Charge - ${ward?.name || 'Ward'} (${ward?.ward_type || ''}) x ${days} day${days > 1 ? 's' : ''}`,
++    quantity: days,
++    unit_price: segment.daily_rate,
++    total_price: days * Number(segment.daily_rate),
++  }).select('id').single();
++
++  if (itemErr || !item) return itemErr?.message || 'Could not create ward-charge invoice item.';
++
++  const { error: updateErr } = await supabase.from('admission_ward_history')
++    .update({ invoice_item_id: item.id })
++    .eq('id', segment.id);
++  if (updateErr) return updateErr.message;
++
++  return null;
++}
+\ No newline at end of file
+diff --git a/src/lib/database.types.ts b/src/lib/database.types.ts
+index e83621b..1ac6920 100644
+--- a/src/lib/database.types.ts
++++ b/src/lib/database.types.ts
+@@ -14,6 +14,71 @@ export type Database = {
+   }
+   public: {
+     Tables: {
++      admission_ward_history: {
++        Row: {
++          admission_id: string
++          bed_id: string | null
++          created_at: string
++          daily_rate: number
++          ended_at: string | null
++          id: string
++          invoice_item_id: string | null
++          started_at: string
++          ward_id: string | null
++        }
++        Insert: {
++          admission_id: string
++          bed_id?: string | null
++          created_at?: string
++          daily_rate: number
++          ended_at?: string | null
++          id?: string
++          invoice_item_id?: string | null
++          started_at?: string
++          ward_id?: string | null
++        }
++        Update: {
++          admission_id?: string
++          bed_id?: string | null
++          created_at?: string
++          daily_rate?: number
++          ended_at?: string | null
++          id?: string
++          invoice_item_id?: string | null
++          started_at?: string
++          ward_id?: string | null
++        }
++        Relationships: [
++          {
++            foreignKeyName: "admission_ward_history_admission_id_fkey"
++            columns: ["admission_id"]
++            isOneToOne: false
++            referencedRelation: "admissions"
++            referencedColumns: ["id"]
++          },
++          {
++            foreignKeyName: "admission_ward_history_bed_id_fkey"
++            columns: ["bed_id"]
++            isOneToOne: false
++            referencedRelation: "beds"
++            referencedColumns: ["id"]
++          },
++          {
++            foreignKeyName: "admission_ward_history_invoice_item_id_fkey"
++            columns: ["invoice_item_id"]
++            isOneToOne: false
++            referencedRelation: "invoice_items"
++            referencedColumns: ["id"]
++          },
++          {
++            foreignKeyName: "admission_ward_history_ward_id_fkey"
++            columns: ["ward_id"]
++            isOneToOne: false
++            referencedRelation: "wards"
++            referencedColumns: ["id"]
++          },
++        ]
++      }
+       admissions: {
+         Row: {
+           admission_date: string | null
+@@ -178,6 +243,151 @@ export type Database = {
+           },
+         ]
+       }
++      billing_episodes: {
++        Row: {
++          admission_id: string | null
++          appointment_id: string | null
++          closed_at: string | null
++          created_at: string
++          created_by: string | null
++          episode_type: string
++          id: string
++          opened_at: string
++          patient_id: string
++          status: string
++        }
++        Insert: {
++          admission_id?: string | null
++          appointment_id?: string | null
++          closed_at?: string | null
++          created_at?: string
++          created_by?: string | null
++          episode_type: string
++          id?: string
++          opened_at?: string
++          patient_id: string
++          status?: string
++        }
++        Update: {
++          admission_id?: string | null
++          appointment_id?: string | null
++          closed_at?: string | null
++          created_at?: string
++          created_by?: string | null
++          episode_type?: string
++          id?: string
++          opened_at?: string
++          patient_id?: string
++          status?: string
++        }
++        Relationships: [
++          {
++            foreignKeyName: "billing_episodes_admission_id_fkey"
++            columns: ["admission_id"]
++            isOneToOne: false
++            referencedRelation: "admissions"
++            referencedColumns: ["id"]
++          },
++          {
++            foreignKeyName: "billing_episodes_appointment_id_fkey"
++            columns: ["appointment_id"]
++            isOneToOne: false
++            referencedRelation: "appointments"
++            referencedColumns: ["id"]
++          },
++          {
++            foreignKeyName: "billing_episodes_created_by_fkey"
++            columns: ["created_by"]
++            isOneToOne: false
++            referencedRelation: "profiles"
++            referencedColumns: ["id"]
++          },
++          {
++            foreignKeyName: "billing_episodes_patient_id_fkey"
++            columns: ["patient_id"]
++            isOneToOne: false
++            referencedRelation: "patients"
++            referencedColumns: ["id"]
++          },
++        ]
++      }
++      cleaning_logs: {
++        Row: {
++          cleaned_at: string
++          created_at: string
++          id: string
++          logged_by: string
++          notes: string | null
++          zone_id: string
++        }
++        Insert: {
++          cleaned_at?: string
++          created_at?: string
++          id?: string
++          logged_by: string
++          notes?: string | null
++          zone_id: string
++        }
++        Update: {
++          cleaned_at?: string
++          created_at?: string
++          id?: string
++          logged_by?: string
++          notes?: string | null
++          zone_id?: string
++        }
++        Relationships: [
++          {
++            foreignKeyName: "cleaning_logs_logged_by_fkey"
++            columns: ["logged_by"]
++            isOneToOne: false
++            referencedRelation: "profiles"
++            referencedColumns: ["id"]
++          },
++          {
++            foreignKeyName: "cleaning_logs_zone_id_fkey"
++            columns: ["zone_id"]
++            isOneToOne: false
++            referencedRelation: "cleaning_zones"
++            referencedColumns: ["id"]
++          },
++        ]
++      }
++      cleaning_zones: {
++        Row: {
++          created_at: string
++          id: string
++          is_active: boolean
++          name: string
++          ward_id: string | null
++          zone_type: string
++        }
++        Insert: {
++          created_at?: string
++          id?: string
++          is_active?: boolean
++          name: string
++          ward_id?: string | null
++          zone_type: string
++        }
++        Update: {
++          created_at?: string
++          id?: string
++          is_active?: boolean
++          name?: string
++          ward_id?: string | null
++          zone_type?: string
++        }
++        Relationships: [
++          {
++            foreignKeyName: "cleaning_zones_ward_id_fkey"
++            columns: ["ward_id"]
++            isOneToOne: false
++            referencedRelation: "wards"
++            referencedColumns: ["id"]
++          },
++        ]
++      }
+       departments: {
+         Row: {
+           created_at: string | null
+@@ -397,6 +607,7 @@ export type Database = {
+           created_at: string
+           created_by: string | null
+           discount: number
++          episode_id: string | null
+           id: string
+           invoice_date: string
+           invoice_number: string | null
+@@ -412,6 +623,7 @@ export type Database = {
+           created_at?: string
+           created_by?: string | null
+           discount?: number
++          episode_id?: string | null
+           id?: string
+           invoice_date?: string
+           invoice_number?: string | null
+@@ -427,6 +639,7 @@ export type Database = {
+           created_at?: string
+           created_by?: string | null
+           discount?: number
++          episode_id?: string | null
+           id?: string
+           invoice_date?: string
+           invoice_number?: string | null
+@@ -446,6 +659,13 @@ export type Database = {
+             referencedRelation: "profiles"
+             referencedColumns: ["id"]
+           },
++          {
++            foreignKeyName: "invoices_episode_id_fkey"
++            columns: ["episode_id"]
++            isOneToOne: true
++            referencedRelation: "billing_episodes"
++            referencedColumns: ["id"]
++          },
+           {
+             foreignKeyName: "invoices_patient_id_fkey"
+             columns: ["patient_id"]
+@@ -650,6 +870,44 @@ export type Database = {
+         }
+         Relationships: []
+       }
++      notifications: {
++        Row: {
++          body: string
++          created_at: string
++          id: string
++          is_read: boolean
++          link: string | null
++          title: string
++          user_id: string
++        }
++        Insert: {
++          body: string
++          created_at?: string
++          id?: string
++          is_read?: boolean
++          link?: string | null
++          title: string
++          user_id: string
++        }
++        Update: {
++          body?: string
++          created_at?: string
++          id?: string
++          is_read?: boolean
++          link?: string | null
++          title?: string
++          user_id?: string
++        }
++        Relationships: [
++          {
++            foreignKeyName: "notifications_user_id_fkey"
++            columns: ["user_id"]
++            isOneToOne: false
++            referencedRelation: "profiles"
++            referencedColumns: ["id"]
++          },
++        ]
++      }
+       patients: {
+         Row: {
+           address: string | null
+@@ -899,6 +1157,60 @@ export type Database = {
+           },
+         ]
+       }
++      profile_change_requests: {
++        Row: {
++          changes: Json
++          created_at: string
++          id: string
++          requested_by: string
++          review_notes: string | null
++          reviewed_at: string | null
++          reviewed_by: string | null
++          status: string
++          target_id: string
++          target_table: string
++        }
++        Insert: {
++          changes: Json
++          created_at?: string
++          id?: string
++          requested_by: string
++          review_notes?: string | null
++          reviewed_at?: string | null
++          reviewed_by?: string | null
++          status?: string
++          target_id: string
++          target_table: string
++        }
++        Update: {
++          changes?: Json
++          created_at?: string
++          id?: string
++          requested_by?: string
++          review_notes?: string | null
++          reviewed_at?: string | null
++          reviewed_by?: string | null
++          status?: string
++          target_id?: string
++          target_table?: string
++        }
++        Relationships: [
++          {
++            foreignKeyName: "profile_change_requests_requested_by_fkey"
++            columns: ["requested_by"]
++            isOneToOne: false
++            referencedRelation: "profiles"
++            referencedColumns: ["id"]
++          },
++          {
++            foreignKeyName: "profile_change_requests_reviewed_by_fkey"
++            columns: ["reviewed_by"]
++            isOneToOne: false
++            referencedRelation: "profiles"
++            referencedColumns: ["id"]
++          },
++        ]
++      }
+       profiles: {
+         Row: {
+           created_at: string | null
+@@ -993,6 +1305,14 @@ export type Database = {
+       [_ in never]: never
+     }
+     Functions: {
++      approve_profile_change_request: {
++        Args: { request_id: string; notes?: string }
++        Returns: undefined
++      }
++      reject_profile_change_request: {
++        Args: { request_id: string; notes?: string }
++        Returns: undefined
++      }
+       calculate_invoice_total: {
+         Args: { p_invoice_id: string }
+         Returns: number
+diff --git a/src/pages/SettingsPage.tsx b/src/pages/SettingsPage.tsx
+index 9233aa6..5ef4df6 100644
+--- a/src/pages/SettingsPage.tsx
++++ b/src/pages/SettingsPage.tsx
+@@ -3,10 +3,23 @@ import { useAuth } from '@/contexts/AuthContext';
+ import { supabase } from '@/lib/supabase';
+ import { useRole } from '@/hooks/useRole';
+ import { Modal } from '@/components/ui/Modal';
+-import { UserPlus, Users, Shield, CheckCircle2, AlertCircle } from 'lucide-react';
+-import type { UserRole, Department } from '@/types';
++import { UserPlus, Users, Shield, CheckCircle2, AlertCircle, Stethoscope, ClipboardCheck } from 'lucide-react';
++import type { UserRole, Department, Doctor, ProfileChangeRequest } from '@/types';
+ import { DAYS_OF_WEEK, normalizeSpecialization } from '@/lib/utils';
+ 
++// The 8 fields a doctor can self-request a change to -- mirrors the
++// DB-level allow-list in migration 036's validate_profile_change_request
++// trigger exactly. `role` (and everything else) is deliberately absent;
++// this list existing in two places (here and the DB trigger) is fine --
++// the DB trigger is the actual enforcement, this is just what the form
++// offers, and a mismatch here would only ever be "form offers less than
++// the DB allows", never a security gap.
++const SELF_EDITABLE_FIELDS = [
++  'phone', 'specialization', 'experience_years', 'consultation_fee',
++  'available_days', 'available_time_start', 'available_time_end', 'is_active',
++] as const;
++type SelfEditableField = typeof SELF_EDITABLE_FIELDS[number];
++
+ const initialForm = {
+   email: '',
+   password: '',
+@@ -29,7 +42,7 @@ const initialForm = {
+ 
+ export function SettingsPage() {
+   const { user } = useAuth();
+-  const { isAdmin } = useRole();
++  const { isAdmin, isDoctor } = useRole();
+   const [showUserModal, setShowUserModal] = useState(false);
+   const [message, setMessage] = useState('');
+   const [error, setError] = useState('');
+@@ -37,10 +50,137 @@ export function SettingsPage() {
+   const [userForm, setUserForm] = useState(initialForm);
+   const [departments, setDepartments] = useState<Department[]>([]);
+ 
++  // ---- Doctor self-edit (#18) ----
++  const [myDoctorRecord, setMyDoctorRecord] = useState<Doctor | null>(null);
++  const [selfEditForm, setSelfEditForm] = useState<Record<SelfEditableField, string | string[] | boolean>>({
++    phone: '', specialization: '', experience_years: '', consultation_fee: '',
++    available_days: [], available_time_start: '', available_time_end: '', is_active: true,
++  });
++  const [myRequests, setMyRequests] = useState<ProfileChangeRequest[]>([]);
++  const [selfEditMessage, setSelfEditMessage] = useState('');
++  const [selfEditError, setSelfEditError] = useState('');
++  const [submittingRequest, setSubmittingRequest] = useState(false);
++
++  // ---- Admin review queue (#18) ----
++  const [pendingRequests, setPendingRequests] = useState<ProfileChangeRequest[]>([]);
++  const [reviewingId, setReviewingId] = useState<string | null>(null);
++  const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
++  const [reviewError, setReviewError] = useState('');
++
+   useEffect(() => {
+     supabase.from('departments').select('*').order('name').then(({ data }) => setDepartments(data || []));
+   }, []);
+ 
++  useEffect(() => {
++    if (isDoctor() && user?.id) fetchMyDoctorRecord();
++    if (isAdmin()) fetchPendingRequests();
++  }, [user?.id]);
++
++  async function fetchMyDoctorRecord() {
++    const { data } = await supabase.from('doctors').select('*').eq('user_id', user!.id).maybeSingle();
++    if (data) {
++      setMyDoctorRecord(data as unknown as Doctor);
++      setSelfEditForm({
++        phone: data.phone || '',
++        specialization: data.specialization || '',
++        experience_years: String(data.experience_years ?? ''),
++        consultation_fee: String(data.consultation_fee ?? ''),
++        available_days: data.available_days || [],
++        available_time_start: data.available_time_start || '',
++        available_time_end: data.available_time_end || '',
++        is_active: data.is_active ?? true,
++      });
++    }
++    const { data: reqs } = await supabase.from('profile_change_requests')
++      .select('*').eq('requested_by', user!.id).order('created_at', { ascending: false });
++    setMyRequests((reqs || []) as unknown as ProfileChangeRequest[]);
++  }
++
++  async function fetchPendingRequests() {
++    const { data } = await supabase.from('profile_change_requests')
++      .select('*, requester:profiles!profile_change_requests_requested_by_fkey(full_name, email)')
++      .eq('status', 'PENDING').order('created_at', { ascending: true });
++    setPendingRequests((data || []) as unknown as ProfileChangeRequest[]);
++  }
++
++  function toggleSelfEditDay(day: string) {
++    setSelfEditForm(f => {
++      const days = f.available_days as string[];
++      return { ...f, available_days: days.includes(day) ? days.filter(d => d !== day) : [...days, day] };
++    });
++  }
++
++  /**
++   * Submits a DIFFED payload -- only fields that actually changed from
++   * the doctor's current record -- so an admin reviewing a request sees
++   * exactly what's being asked for rather than a full snapshot to
++   * compare by eye.
++   */
++  async function handleSubmitSelfEdit(e: React.FormEvent) {
++    e.preventDefault();
++    setSelfEditMessage('');
++    setSelfEditError('');
++    if (!myDoctorRecord) return;
++
++    const changes: Record<string, unknown> = {};
++    for (const field of SELF_EDITABLE_FIELDS) {
++      const newVal = selfEditForm[field];
++      const oldVal = field === 'experience_years' || field === 'consultation_fee'
++        ? String((myDoctorRecord as unknown as Record<string, unknown>)[field] ?? '')
++        : (myDoctorRecord as unknown as Record<string, unknown>)[field];
++      const normalizedNew = field === 'experience_years' ? Number(newVal) :
++        field === 'consultation_fee' ? Number(newVal) : newVal;
++      const normalizedOld = field === 'available_days' ? (oldVal || []) : oldVal;
++      if (JSON.stringify(normalizedNew) !== JSON.stringify(normalizedOld)) {
++        changes[field] = normalizedNew;
++      }
++    }
++
++    if (Object.keys(changes).length === 0) {
++      setSelfEditError('No changes to submit.');
++      return;
++    }
++
++    setSubmittingRequest(true);
++    const { error: insertError } = await supabase.from('profile_change_requests').insert({
++      target_table: 'doctors',
++      target_id: myDoctorRecord.id,
++      requested_by: user!.id,
++      changes: changes as never,
++    });
++    setSubmittingRequest(false);
++
++    if (insertError) {
++      setSelfEditError(insertError.message);
++      return;
++    }
++    setSelfEditMessage('Change request submitted. An admin will review it.');
++    fetchMyDoctorRecord();
++  }
++
++  async function handleReview(requestId: string, approve: boolean) {
++    setReviewError('');
++    setReviewingId(requestId);
++    const notes = reviewNotes[requestId] || undefined;
++    const { error: rpcError } = await supabase.rpc(
++      approve ? 'approve_profile_change_request' : 'reject_profile_change_request',
++      { request_id: requestId, notes }
++    );
++    setReviewingId(null);
++    if (rpcError) {
++      setReviewError(rpcError.message);
++      return;
++    }
++    fetchPendingRequests();
++  }
++
++  function formatChangeValue(key: string, value: unknown): string {
++    if (Array.isArray(value)) return value.join(', ');
++    if (typeof value === 'boolean') return value ? 'Active' : 'Inactive';
++    if (key === 'consultation_fee') return `₹${value}`;
++    return String(value);
++  }
++
+   function toggleDay(day: string) {
+     setUserForm(f => ({
+       ...f,
+@@ -184,6 +324,138 @@ export function SettingsPage() {
+         </div>
+       </div>
+ 
++      {isDoctor() && myDoctorRecord && (
++        <div className="card">
++          <div className="flex items-center gap-3 mb-4">
++            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-100">
++              <Stethoscope className="h-5 w-5 text-blue-600" />
++            </div>
++            <div>
++              <h2 className="text-lg font-semibold text-gray-900">Request Profile Changes</h2>
++              <p className="text-sm text-gray-500">Changes require admin approval before they take effect</p>
++            </div>
++          </div>
++
++          {selfEditMessage && (
++            <div className="mb-4 flex items-start gap-2 rounded-lg bg-green-50 p-3 text-sm text-green-700">
++              <CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0" /><span>{selfEditMessage}</span>
++            </div>
++          )}
++          {selfEditError && (
++            <div className="mb-4 flex items-start gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-700">
++              <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" /><span>{selfEditError}</span>
++            </div>
++          )}
++
++          <form onSubmit={handleSubmitSelfEdit} className="space-y-4">
++            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
++              <div>
++                <label className="label">Phone</label>
++                <input pattern="[0-9]{10}" value={selfEditForm.phone as string} onChange={e => setSelfEditForm({ ...selfEditForm, phone: e.target.value })} className="input" />
++              </div>
++              <div>
++                <label className="label">Specialization</label>
++                <input value={selfEditForm.specialization as string} onChange={e => setSelfEditForm({ ...selfEditForm, specialization: e.target.value })} className="input" />
++              </div>
++              <div>
++                <label className="label">Experience (years)</label>
++                <input type="number" min="0" value={selfEditForm.experience_years as string} onChange={e => setSelfEditForm({ ...selfEditForm, experience_years: e.target.value })} className="input" />
++              </div>
++              <div>
++                <label className="label">Consultation Fee (₹)</label>
++                <input type="number" min="0" step="0.01" value={selfEditForm.consultation_fee as string} onChange={e => setSelfEditForm({ ...selfEditForm, consultation_fee: e.target.value })} className="input" />
++              </div>
++              <div>
++                <label className="label">Available From</label>
++                <input type="time" value={selfEditForm.available_time_start as string} onChange={e => setSelfEditForm({ ...selfEditForm, available_time_start: e.target.value })} className="input" />
++              </div>
++              <div>
++                <label className="label">Available To</label>
++                <input type="time" value={selfEditForm.available_time_end as string} onChange={e => setSelfEditForm({ ...selfEditForm, available_time_end: e.target.value })} className="input" />
++              </div>
++            </div>
++            <div>
++              <label className="label">Available Days</label>
++              <div className="flex flex-wrap gap-2">
++                {DAYS_OF_WEEK.map(day => (
++                  <button type="button" key={day} onClick={() => toggleSelfEditDay(day)}
++                    className={`rounded-full px-3 py-1 text-xs font-medium ${(selfEditForm.available_days as string[]).includes(day) ? 'bg-primary-600 text-white' : 'bg-white text-gray-600 border border-gray-300'}`}>
++                    {day.slice(0, 3)}
++                  </button>
++                ))}
++              </div>
++            </div>
++            <label className="flex items-center gap-2 text-sm text-gray-700">
++              <input type="checkbox" checked={selfEditForm.is_active as boolean} onChange={e => setSelfEditForm({ ...selfEditForm, is_active: e.target.checked })} />
++              Active (visible for booking)
++            </label>
++            <div className="flex justify-end">
++              <button type="submit" disabled={submittingRequest} className="btn-primary">
++                {submittingRequest ? 'Submitting...' : 'Submit Change Request'}
++              </button>
++            </div>
++          </form>
++
++          {myRequests.length > 0 && (
++            <div className="mt-6 border-t border-gray-100 pt-4">
++              <p className="mb-2 text-sm font-medium text-gray-700">Your requests</p>
++              <div className="space-y-2">
++                {myRequests.map(r => (
++                  <div key={r.id} className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-xs">
++                    <div>
++                      <span className={`badge ${r.status === 'APPROVED' ? 'bg-green-50 text-green-700' : r.status === 'REJECTED' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700'}`}>{r.status}</span>
++                      <span className="ml-2 text-gray-600">{Object.keys(r.changes).map(k => `${k}: ${formatChangeValue(k, r.changes[k])}`).join(', ')}</span>
++                    </div>
++                    <span className="text-gray-400">{new Date(r.created_at).toLocaleDateString()}</span>
++                  </div>
++                ))}
++              </div>
++            </div>
++          )}
++        </div>
++      )}
++
++      {isAdmin() && pendingRequests.length > 0 && (
++        <div className="card">
++          <div className="flex items-center gap-3 mb-4">
++            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-100">
++              <ClipboardCheck className="h-5 w-5 text-amber-600" />
++            </div>
++            <div>
++              <h2 className="text-lg font-semibold text-gray-900">Pending Profile Change Requests</h2>
++              <p className="text-sm text-gray-500">Review and approve or reject doctor-submitted changes</p>
++            </div>
++          </div>
++          {reviewError && (
++            <div className="mb-4 flex items-start gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-700">
++              <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" /><span>{reviewError}</span>
++            </div>
++          )}
++          <div className="space-y-3">
++            {pendingRequests.map(r => (
++              <div key={r.id} className="rounded-lg border border-gray-200 p-3">
++                <p className="text-sm font-medium text-gray-900">{r.requester?.full_name || 'Unknown'} <span className="font-normal text-gray-500">({r.requester?.email})</span></p>
++                <ul className="mt-1 text-xs text-gray-600">
++                  {Object.keys(r.changes).map(k => (
++                    <li key={k}>{k.replace(/_/g, ' ')}: <span className="font-medium">{formatChangeValue(k, r.changes[k])}</span></li>
++                  ))}
++                </ul>
++                <input
++                  placeholder="Optional review notes"
++                  value={reviewNotes[r.id] || ''}
++                  onChange={e => setReviewNotes({ ...reviewNotes, [r.id]: e.target.value })}
++                  className="input mt-2 py-1 text-xs"
++                />
++                <div className="mt-2 flex justify-end gap-2">
++                  <button disabled={reviewingId === r.id} onClick={() => handleReview(r.id, false)} className="btn-secondary py-1 px-3 text-xs">Reject</button>
++                  <button disabled={reviewingId === r.id} onClick={() => handleReview(r.id, true)} className="btn-primary py-1 px-3 text-xs">Approve</button>
++                </div>
++              </div>
++            ))}
++          </div>
++        </div>
++      )}
++
+       <div className="card">
+         <h2 className="text-lg font-semibold text-gray-900 mb-4">System Information</h2>
+         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+diff --git a/src/pages/appointments/AppointmentsPage.tsx b/src/pages/appointments/AppointmentsPage.tsx
+index 4cf45a3..f027da1 100644
+--- a/src/pages/appointments/AppointmentsPage.tsx
++++ b/src/pages/appointments/AppointmentsPage.tsx
+@@ -6,6 +6,7 @@ import { Modal } from '@/components/ui/Modal';
+ import { SearchInput } from '@/components/ui/SearchInput';
+ import { EmptyState } from '@/components/ui/EmptyState';
+ import type { Appointment, Patient, Doctor, Department } from '@/types';
++import { findOrCreateEpisodeInvoice } from '@/lib/billing';
+ import { Plus, User, Stethoscope, CheckCircle, XCircle, AlertCircle, RefreshCw } from 'lucide-react';
+ import { formatDate, formatTime, getStatusColor, TIME_SLOTS } from '@/lib/utils';
+ import { useDebounce } from '@/hooks/useDebounce';
+@@ -26,6 +27,8 @@ export function AppointmentsPage() {
+   const [rescheduleForm, setRescheduleForm] = useState({ appointment_date: '', appointment_time: '' });
+   const [rescheduleBookedTimes, setRescheduleBookedTimes] = useState<string[]>([]);
+   const [rescheduleError, setRescheduleError] = useState('');
++  const [completeError, setCompleteError] = useState('');
++  const [completing, setCompleting] = useState(false);
+   const [filterDate, setFilterDate] = useState('');
+   const debouncedSearch = useDebounce(search, 300);
+   const { user } = useAuth();
+@@ -127,9 +130,69 @@ export function AppointmentsPage() {
+ 
+   function openCompleteModal(appt: Appointment) {
+     setSelectedAppointment(appt);
++    setCompleteError('');
+     setShowCompleteModal(true);
+   }
+ 
++  /**
++   * #7: completing an appointment finds-or-creates the OPD_VISIT episode
++   * for it and adds a consultation line, in the exact description/pricing
++   * format the manual Add Item flow already uses -- a consultation charge
++   * looks identical regardless of which path created it.
++   *
++   * Returns a boolean rather than relying on reading `completeError` back
++   * after calling setCompleteError -- a stale-closure bug caught during
++   * this work: checking React state immediately after setting it inside
++   * the same async function doesn't see the just-set value (the state
++   * update is queued, not applied synchronously), so the caller would
++   * have seen the OLD (empty) error state and closed the modal on a
++   * failure. Returning the outcome directly sidesteps that entirely.
++   */
++  async function handleComplete(appt: Appointment): Promise<boolean> {
++    setCompleting(true);
++    setCompleteError('');
++
++    const { error: statusError } = await supabase.from('appointments').update({ status: 'COMPLETED' }).eq('id', appt.id);
++    if (statusError) {
++      setCompleteError('Could not complete the appointment. Please try again.');
++      setCompleting(false);
++      return false;
++    }
++
++    const episodeResult = await findOrCreateEpisodeInvoice(
++      { episode_type: 'OPD_VISIT', patient_id: appt.patient_id, appointment_id: appt.id },
++      user?.id
++    );
++    if ('error' in episodeResult) {
++      // The appointment is genuinely completed at this point -- don't
++      // undo that over a billing hiccup, but do surface it so it isn't
++      // silently missing from the invoice.
++      console.error('Appointment completed but opening its billing episode failed:', episodeResult.error);
++      setCompleteError('Appointment marked complete, but the consultation charge could not be added automatically. Add it manually from Billing.');
++      setCompleting(false);
++      return false;
++    }
++
++    const { error: itemError } = await supabase.from('invoice_items').insert({
++      invoice_id: episodeResult.invoiceId,
++      item_type: 'consultation',
++      description: `Consultation - Dr. ${appt.doctor?.full_name}`,
++      quantity: 1,
++      unit_price: appt.doctor?.consultation_fee || 0,
++      total_price: appt.doctor?.consultation_fee || 0,
++      reference_id: appt.doctor_id,
++    });
++    if (itemError) {
++      console.error('Appointment completed but adding the consultation charge failed:', itemError);
++      setCompleteError('Appointment marked complete, but the consultation charge could not be added automatically. Add it manually from Billing.');
++      setCompleting(false);
++      return false;
++    }
++
++    setCompleting(false);
++    return true;
++  }
++
+   function getSlotInfo(): { slots: string[]; reason: string | null } {
+     if (!form.doctor_id || !form.appointment_date) return { slots: [], reason: null };
+     const doctor = doctors.find(d => d.id === form.doctor_id);
+@@ -345,14 +408,19 @@ export function AppointmentsPage() {
+       <Modal isOpen={showCompleteModal} onClose={() => setShowCompleteModal(false)} title="Complete Appointment">
+         <div className="space-y-4">
+           <p className="text-sm text-gray-600">Complete consultation for <strong>{selectedAppointment?.patient?.full_name}</strong> with Dr. {selectedAppointment?.doctor?.full_name}?</p>
++          <p className="text-xs text-gray-500">This will automatically add a consultation charge (₹{selectedAppointment?.doctor?.consultation_fee}) to this patient's visit invoice.</p>
++          {completeError && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{completeError}</p>}
+           <div className="flex justify-end gap-3">
+             <button onClick={() => setShowCompleteModal(false)} className="btn-secondary">Cancel</button>
+-            <button onClick={async () => {
++            <button disabled={completing} onClick={async () => {
+               if (selectedAppointment) {
+-                await updateStatus(selectedAppointment.id, 'COMPLETED');
+-                setShowCompleteModal(false);
++                const ok = await handleComplete(selectedAppointment);
++                if (ok) {
++                  setShowCompleteModal(false);
++                  fetchData();
++                }
+               }
+-            }} className="btn-primary">Complete</button>
++            }} className="btn-primary">{completing ? 'Completing...' : 'Complete'}</button>
+           </div>
+         </div>
+       </Modal>
+diff --git a/src/pages/billing/InvoiceDetailPage.tsx b/src/pages/billing/InvoiceDetailPage.tsx
+index ec64c26..ae9d00f 100644
+--- a/src/pages/billing/InvoiceDetailPage.tsx
++++ b/src/pages/billing/InvoiceDetailPage.tsx
+@@ -35,13 +35,14 @@ export function InvoiceDetailPage() {
+   const { id } = useParams<{ id: string }>();
+   const navigate = useNavigate();
+   const { user } = useAuth();
+-  const { isReceptionist } = useRole();
++  const { isReceptionist, isPharmacist, isAdmin } = useRole();
+   const [invoice, setInvoice] = useState<Invoice | null>(null);
+   const [items, setItems] = useState<InvoiceItem[]>([]);
+   const [payments, setPayments] = useState<Payment[]>([]);
+   const [adjustments, setAdjustments] = useState<InvoiceAdjustment[]>([]);
+   const [loading, setLoading] = useState(true);
+   const [showItemModal, setShowItemModal] = useState(false);
++  const [showPrescribedModal, setShowPrescribedModal] = useState(false);
+   const [showPaymentModal, setShowPaymentModal] = useState(false);
+   const [showWaiverModal, setShowWaiverModal] = useState(false);
+ 
+@@ -365,9 +366,14 @@ export function InvoiceDetailPage() {
+         <div className="flex items-center justify-between mb-4">
+           <h2 className="text-lg font-semibold text-gray-900">Items</h2>
+           {isReceptionist() && invoice.status !== 'PAID' && (
+-            <button onClick={() => setShowItemModal(true)} className="btn-primary text-xs py-1.5 px-3 print:hidden">
+-              <Plus className="h-3.5 w-3.5 mr-1" /> Add Item
+-            </button>
++            <div className="flex gap-2">
++              <button onClick={() => setShowPrescribedModal(true)} className="btn-secondary text-xs py-1.5 px-3 print:hidden">
++                <Pill className="h-3.5 w-3.5 mr-1" /> Prescribed Medicines
++              </button>
++              <button onClick={() => setShowItemModal(true)} className="btn-primary text-xs py-1.5 px-3 print:hidden">
++                <Plus className="h-3.5 w-3.5 mr-1" /> Add Item
++              </button>
++            </div>
+           )}
+         </div>
+         {items.length === 0 ? <p className="text-center text-gray-500 py-4">No items added</p> : (
+@@ -567,6 +573,16 @@ export function InvoiceDetailPage() {
+         onAdded={fetchData}
+       />
+ 
++      <PrescribedMedicinesModal
++        isOpen={showPrescribedModal}
++        onClose={() => setShowPrescribedModal(false)}
++        invoiceId={id!}
++        patientId={invoice.patient_id}
++        canOverride={isPharmacist() || isAdmin()}
++        currentUserId={user?.id}
++        onAdded={fetchData}
++      />
++
+       <Modal isOpen={showPaymentModal} onClose={() => { setShowPaymentModal(false); setPaymentError(null); }} title="Record Payment" size="sm">
+         <form onSubmit={recordPayment} className="space-y-4">
+           <div className="rounded-lg bg-gray-50 px-3 py-2">
+@@ -1027,4 +1043,241 @@ function DropdownOption({ left, right, onSelect }: { left: string; right: string
+       <span className="ml-3 flex-shrink-0 text-xs text-gray-400">{right}</span>
+     </button>
+   );
++}
++
++// ============================================================
++// Prescribed Medicines modal (#9) — a patient should be able to buy 0-N
++// of what was actually prescribed, across however many separate visits
++// that ends up split over. Scoped to THIS patient's prescriptions with
++// LIVE remaining-quantity tracking, which is a fundamentally different
++// question from "search the medicine catalog" (the generic Add Item
++// flow above).
++//
++// Fetches every non-superseded prescription for the patient, with items;
++// separately fetches EVERY invoice_items row referencing each
++// prescription item -- deliberately not scoped to the current invoice,
++// since the whole point is tracking purchases across every invoice that
++// item has ever appeared on (a patient can buy some on day 1 and the
++// rest on day 5, on a completely different invoice/episode).
++// ============================================================
++
++interface PrescribedMedicinesModalProps {
++  isOpen: boolean;
++  onClose: () => void;
++  invoiceId: string;
++  patientId: string;
++  canOverride: boolean;
++  currentUserId?: string;
++  onAdded: () => void;
++}
++
++function PrescribedMedicinesModal({ isOpen, onClose, invoiceId, patientId, canOverride, currentUserId, onAdded }: PrescribedMedicinesModalProps) {
++  const [prescriptions, setPrescriptions] = useState<Array<{
++    id: string; prescription_number: string; diagnosis: string | null; created_at: string;
++    items: Array<{ id: string; medicine_id: string; dosage: string; frequency: string; quantity: number | null; medicine?: { name: string } }>;
++  }>>([]);
++  const [purchasedByItem, setPurchasedByItem] = useState<Record<string, number>>({});
++  const [loading, setLoading] = useState(false);
++  const [qtyInputs, setQtyInputs] = useState<Record<string, string>>({});
++  const [overrideItemId, setOverrideItemId] = useState<string | null>(null);
++  const [overrideReason, setOverrideReason] = useState('');
++  const [error, setError] = useState('');
++  const [submittingItemId, setSubmittingItemId] = useState<string | null>(null);
++
++  useEffect(() => { if (isOpen) fetchPrescribed(); }, [isOpen, patientId]);
++
++  async function fetchPrescribed() {
++    setLoading(true);
++    setError('');
++    const { data: presData, error: presErr } = await supabase
++      .from('prescriptions')
++      .select('id, prescription_number, diagnosis, created_at, items:prescription_items(id, medicine_id, dosage, frequency, quantity, medicine:medicines(name))')
++      .eq('patient_id', patientId)
++      .is('superseded_by', null)
++      .order('created_at', { ascending: false });
++
++    if (presErr) {
++      console.error('Failed to load prescriptions:', presErr);
++      setError('Could not load prescriptions.');
++      setLoading(false);
++      return;
++    }
++
++    const list = (presData || []) as unknown as typeof prescriptions;
++    setPrescriptions(list);
++
++    const allItemIds = list.flatMap(p => p.items.map(i => i.id));
++    if (allItemIds.length === 0) {
++      setPurchasedByItem({});
++      setLoading(false);
++      return;
++    }
++
++    // NOT scoped to `invoiceId` -- this is the whole point: track
++    // purchases across every invoice this prescription item has ever
++    // appeared on, so day 5's purchase (on a different invoice) sees
++    // what day 1 already bought.
++    const { data: purchases, error: purchErr } = await supabase
++      .from('invoice_items')
++      .select('prescription_item_id, quantity')
++      .in('prescription_item_id', allItemIds);
++
++    if (purchErr) {
++      console.error('Failed to load existing purchases:', purchErr);
++    }
++
++    const totals: Record<string, number> = {};
++    for (const row of purchases || []) {
++      if (!row.prescription_item_id) continue;
++      totals[row.prescription_item_id] = (totals[row.prescription_item_id] || 0) + Number(row.quantity || 0);
++    }
++    setPurchasedByItem(totals);
++    setLoading(false);
++  }
++
++  function remainingFor(item: { id: string; quantity: number | null }): number | null {
++    if (item.quantity == null) return null; // "no cap recorded" -- legacy prescription item
++    return item.quantity - (purchasedByItem[item.id] || 0);
++  }
++
++  async function handleAddPurchase(item: { id: string; medicine_id: string; medicine?: { name: string }; quantity: number | null }) {
++    setError('');
++    const qtyStr = qtyInputs[item.id];
++    const qty = parseFloat(qtyStr || '0');
++    if (!qty || qty <= 0) {
++      setError('Enter a quantity greater than zero.');
++      return;
++    }
++    const remaining = remainingFor(item);
++    const usingOverride = overrideItemId === item.id;
++
++    if (!usingOverride && remaining != null && qty > remaining) {
++      setError(`Only ${remaining} remaining on this prescription line. Use the override if this is authorized (e.g. lost/damaged medication).`);
++      return;
++    }
++    if (usingOverride && !overrideReason.trim()) {
++      setError('An override reason is required.');
++      return;
++    }
++
++    setSubmittingItemId(item.id);
++    const { data: medicine } = await supabase.from('medicines').select('unit_price').eq('id', item.medicine_id).single();
++    const unitPrice = medicine?.unit_price || 0;
++
++    const { error: insertError } = await supabase.from('invoice_items').insert({
++      invoice_id: invoiceId,
++      item_type: 'medicine',
++      description: item.medicine?.name || 'Medicine',
++      quantity: qty,
++      unit_price: unitPrice,
++      total_price: qty * unitPrice,
++      reference_id: item.medicine_id,
++      prescription_item_id: item.id,
++      ...(usingOverride ? {
++        quantity_override_reason: overrideReason.trim(),
++        quantity_override_by: currentUserId,
++        quantity_override_at: new Date().toISOString(),
++      } : {}),
++    });
++
++    setSubmittingItemId(null);
++    if (insertError) {
++      // The database trigger (migration 031, extended) is the real
++      // enforcement -- this message surfaces whatever it raised
++      // (superseded prescription, or exceeds remaining quantity) rather
++      // than assuming the client-side check above was the only gate.
++      setError(insertError.message);
++      return;
++    }
++
++    setQtyInputs(q => ({ ...q, [item.id]: '' }));
++    setOverrideItemId(null);
++    setOverrideReason('');
++    await fetchPrescribed();
++    onAdded();
++  }
++
++  return (
++    <Modal isOpen={isOpen} onClose={onClose} title="Prescribed Medicines" size="lg">
++      <div className="space-y-4">
++        <p className="text-xs text-gray-500">
++          Purchases are tracked across every invoice, not just this one — a patient can buy part of a
++          prescription today and the rest on a later visit.
++        </p>
++        {error && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
++        {loading ? <div className="py-8 text-center text-sm text-gray-500">Loading...</div> :
++        prescriptions.length === 0 ? <p className="py-8 text-center text-sm text-gray-500">No prescriptions found for this patient.</p> : (
++          <div className="max-h-[28rem] space-y-4 overflow-y-auto">
++            {prescriptions.map(p => (
++              <div key={p.id} className="rounded-lg border border-gray-200 p-3">
++                <p className="mb-2 text-sm font-semibold text-gray-900">
++                  {p.prescription_number} — {formatDate(p.created_at)}
++                  {p.diagnosis && <span className="ml-2 font-normal text-gray-500">{p.diagnosis}</span>}
++                </p>
++                {p.items.length === 0 ? <p className="text-xs text-gray-400">No medicine lines on this prescription.</p> : (
++                  <div className="space-y-2">
++                    {p.items.map(item => {
++                      const remaining = remainingFor(item);
++                      const isDepleted = remaining != null && remaining <= 0;
++                      return (
++                        <div key={item.id} className="flex flex-wrap items-center gap-2 rounded-lg bg-gray-50 px-3 py-2">
++                          <div className="min-w-[10rem] flex-1">
++                            <p className="text-sm font-medium text-gray-900">{item.medicine?.name}</p>
++                            <p className="text-xs text-gray-500">
++                              {item.dosage} · {item.frequency} ·{' '}
++                              {remaining == null ? 'no cap recorded' : `${Math.max(remaining, 0)} of ${item.quantity} remaining`}
++                            </p>
++                          </div>
++                          <input
++                            type="number" min="0" step="0.5"
++                            value={qtyInputs[item.id] || ''}
++                            onChange={e => setQtyInputs(q => ({ ...q, [item.id]: e.target.value }))}
++                            className="input w-24 py-1"
++                            placeholder="Qty"
++                            disabled={isDepleted && overrideItemId !== item.id}
++                          />
++                          <button
++                            onClick={() => handleAddPurchase(item)}
++                            disabled={submittingItemId === item.id}
++                            className="btn-primary py-1 px-3 text-xs"
++                          >
++                            Add
++                          </button>
++                          {canOverride && (
++                            overrideItemId === item.id ? (
++                              <div className="flex w-full items-center gap-2 pt-1">
++                                <input
++                                  value={overrideReason}
++                                  onChange={e => setOverrideReason(e.target.value)}
++                                  className="input flex-1 py-1 text-xs"
++                                  placeholder="Override reason (e.g. lost/damaged medication)"
++                                />
++                                <button onClick={() => { setOverrideItemId(null); setOverrideReason(''); }} className="text-xs text-gray-500 hover:text-gray-700">
++                                  Cancel override
++                                </button>
++                              </div>
++                            ) : (
++                              <button
++                                onClick={() => { setOverrideItemId(item.id); setOverrideReason(''); }}
++                                className="text-xs text-amber-700 hover:text-amber-900"
++                              >
++                                Override cap
++                              </button>
++                            )
++                          )}
++                        </div>
++                      );
++                    })}
++                  </div>
++                )}
++              </div>
++            ))}
++          </div>
++        )}
++        <div className="flex justify-end">
++          <button onClick={onClose} className="btn-secondary">Close</button>
++        </div>
++      </div>
++    </Modal>
++  );
+ }
+\ No newline at end of file
+diff --git a/src/pages/hygiene/HygienePage.tsx b/src/pages/hygiene/HygienePage.tsx
+new file mode 100644
+index 0000000..9f87de7
+--- /dev/null
++++ b/src/pages/hygiene/HygienePage.tsx
+@@ -0,0 +1,212 @@
++import { useEffect, useState } from 'react';
++import { supabase } from '@/lib/supabase';
++import { useAuth } from '@/contexts/AuthContext';
++import { Modal } from '@/components/ui/Modal';
++import { EmptyState } from '@/components/ui/EmptyState';
++import type { CleaningZone, CleaningLog, CleaningZoneType, Ward } from '@/types';
++import { Sparkles, Plus, CheckCircle2 } from 'lucide-react';
++
++// Log-and-report, not proactive alerting/scheduling -- confirmed scope.
++// The twice-daily rule is specifically about wards, not floors or
++// chambers, so only ward-type zones get an under-target flag.
++const WARD_DAILY_TARGET = 2;
++
++const ZONE_TYPE_LABELS: Record<CleaningZoneType, string> = {
++  ward: 'Wards', floor: 'Floors', chamber: 'Doctor Chambers', other: 'Other',
++};
++
++export function HygienePage() {
++  const { user } = useAuth();
++  const [zones, setZones] = useState<CleaningZone[]>([]);
++  const [todayLogs, setTodayLogs] = useState<CleaningLog[]>([]);
++  const [wards, setWards] = useState<Ward[]>([]);
++  const [loading, setLoading] = useState(true);
++
++  const [showLogModal, setShowLogModal] = useState(false);
++  const [logZone, setLogZone] = useState<CleaningZone | null>(null);
++  const [logNotes, setLogNotes] = useState('');
++  const [logSubmitting, setLogSubmitting] = useState(false);
++  const [logError, setLogError] = useState('');
++
++  const [showAddZoneModal, setShowAddZoneModal] = useState(false);
++  const [zoneForm, setZoneForm] = useState<{ name: string; zone_type: CleaningZoneType; ward_id: string }>({ name: '', zone_type: 'floor', ward_id: '' });
++  const [addZoneError, setAddZoneError] = useState('');
++  const [addZoneSubmitting, setAddZoneSubmitting] = useState(false);
++
++  useEffect(() => { fetchData(); }, []);
++
++  async function fetchData() {
++    setLoading(true);
++    const todayStart = new Date();
++    todayStart.setHours(0, 0, 0, 0);
++
++    const [{ data: zonesData }, { data: logsData }, { data: wardsData }] = await Promise.all([
++      supabase.from('cleaning_zones').select('*, ward:wards(*)').eq('is_active', true).order('zone_type').order('name'),
++      supabase.from('cleaning_logs').select('*, logged_by_profile:profiles(full_name)').gte('cleaned_at', todayStart.toISOString()),
++      supabase.from('wards').select('*').order('name'),
++    ]);
++    setZones((zonesData || []) as unknown as CleaningZone[]);
++    setTodayLogs((logsData || []) as unknown as CleaningLog[]);
++    setWards((wardsData || []) as unknown as Ward[]);
++    setLoading(false);
++  }
++
++  // Computed client-side from the day's logs fetched once, rather than a
++  // separate query per zone.
++  function countFor(zoneId: string) {
++    return todayLogs.filter(l => l.zone_id === zoneId).length;
++  }
++
++  function openLogModal(zone: CleaningZone) {
++    setLogZone(zone);
++    setLogNotes('');
++    setLogError('');
++    setShowLogModal(true);
++  }
++
++  async function handleLogCleaning() {
++    if (!logZone || !user?.id) return;
++    setLogSubmitting(true);
++    setLogError('');
++    const { error } = await supabase.from('cleaning_logs').insert({
++      zone_id: logZone.id,
++      logged_by: user.id,
++      notes: logNotes || null,
++    });
++    setLogSubmitting(false);
++    if (error) {
++      setLogError('Could not log cleaning. Please try again.');
++      console.error(error);
++      return;
++    }
++    setShowLogModal(false);
++    fetchData();
++  }
++
++  async function handleAddZone(e: React.FormEvent) {
++    e.preventDefault();
++    setAddZoneError('');
++    if (!zoneForm.name.trim()) {
++      setAddZoneError('Name is required.');
++      return;
++    }
++    setAddZoneSubmitting(true);
++    const { error } = await supabase.from('cleaning_zones').insert({
++      name: zoneForm.name.trim(),
++      zone_type: zoneForm.zone_type,
++      ward_id: zoneForm.zone_type === 'ward' && zoneForm.ward_id ? zoneForm.ward_id : null,
++    });
++    setAddZoneSubmitting(false);
++    if (error) {
++      // Surfaces the "one active zone per ward" constraint directly if
++      // it fires, rather than a generic message.
++      setAddZoneError(error.message);
++      console.error(error);
++      return;
++    }
++    setShowAddZoneModal(false);
++    setZoneForm({ name: '', zone_type: 'floor', ward_id: '' });
++    fetchData();
++  }
++
++  const grouped: Record<CleaningZoneType, CleaningZone[]> = { ward: [], floor: [], chamber: [], other: [] };
++  for (const z of zones) grouped[z.zone_type].push(z);
++
++  return (
++    <div className="space-y-6">
++      <div className="flex items-center justify-between">
++        <div>
++          <h1 className="text-2xl font-bold text-gray-900">Hygiene</h1>
++          <p className="text-sm text-gray-500">Log and track cleaning across wards, floors, and chambers</p>
++        </div>
++        <button onClick={() => setShowAddZoneModal(true)} className="btn-primary">
++          <Plus className="h-4 w-4 mr-1" /> Add Zone
++        </button>
++      </div>
++
++      {loading ? <div className="py-12 text-center">Loading...</div> :
++      zones.length === 0 ? <EmptyState title="No cleaning zones yet" /> : (
++        (Object.keys(grouped) as CleaningZoneType[]).map(type => (
++          grouped[type].length === 0 ? null : (
++            <div key={type} className="card">
++              <h2 className="mb-3 text-sm font-semibold text-gray-900">{ZONE_TYPE_LABELS[type]}</h2>
++              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
++                {grouped[type].map(zone => {
++                  const count = countFor(zone.id);
++                  const underTarget = type === 'ward' && count < WARD_DAILY_TARGET;
++                  return (
++                    <div key={zone.id} className="rounded-lg border border-gray-200 p-3">
++                      <div className="flex items-start justify-between">
++                        <div>
++                          <p className="text-sm font-medium text-gray-900">{zone.name}</p>
++                          <p className="text-xs text-gray-500">Cleaned today: {count}{type === 'ward' ? ` / ${WARD_DAILY_TARGET}` : ''}</p>
++                        </div>
++                        {type === 'ward' && (
++                          <span className={`badge ${underTarget ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'}`}>
++                            {underTarget ? 'Under target' : 'On target'}
++                          </span>
++                        )}
++                      </div>
++                      <button onClick={() => openLogModal(zone)} className="btn-secondary mt-3 w-full py-1.5 text-xs">
++                        <Sparkles className="h-3.5 w-3.5 mr-1" /> Log Cleaning
++                      </button>
++                    </div>
++                  );
++                })}
++              </div>
++            </div>
++          )
++        ))
++      )}
++
++      <Modal isOpen={showLogModal} onClose={() => setShowLogModal(false)} title={`Log Cleaning — ${logZone?.name || ''}`} size="sm">
++        <div className="space-y-4">
++          <div>
++            <label className="label">Notes (optional)</label>
++            <textarea value={logNotes} onChange={e => setLogNotes(e.target.value)} className="input" rows={3} placeholder="Anything worth noting..." />
++          </div>
++          {logError && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{logError}</p>}
++          <div className="flex justify-end gap-3">
++            <button onClick={() => setShowLogModal(false)} className="btn-secondary">Cancel</button>
++            <button onClick={handleLogCleaning} disabled={logSubmitting} className="btn-primary">
++              <CheckCircle2 className="h-4 w-4 mr-1" /> {logSubmitting ? 'Logging...' : 'Log Cleaning'}
++            </button>
++          </div>
++        </div>
++      </Modal>
++
++      <Modal isOpen={showAddZoneModal} onClose={() => setShowAddZoneModal(false)} title="Add Cleaning Zone" size="sm">
++        <form onSubmit={handleAddZone} className="space-y-4">
++          <div>
++            <label className="label">Zone Type *</label>
++            <select value={zoneForm.zone_type} onChange={e => setZoneForm({ ...zoneForm, zone_type: e.target.value as CleaningZoneType, ward_id: '' })} className="input">
++              <option value="floor">Floor</option>
++              <option value="chamber">Doctor Chamber</option>
++              <option value="ward">Ward</option>
++              <option value="other">Other</option>
++            </select>
++          </div>
++          {zoneForm.zone_type === 'ward' && (
++            <div>
++              <label className="label">Link to Ward (optional)</label>
++              <select value={zoneForm.ward_id} onChange={e => setZoneForm({ ...zoneForm, ward_id: e.target.value })} className="input">
++                <option value="">None</option>
++                {wards.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
++              </select>
++              <p className="mt-1 text-xs text-gray-500">A ward can only back one active zone at a time.</p>
++            </div>
++          )}
++          <div>
++            <label className="label">Name *</label>
++            <input value={zoneForm.name} onChange={e => setZoneForm({ ...zoneForm, name: e.target.value })} className="input" placeholder="e.g. Third Floor" />
++          </div>
++          {addZoneError && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{addZoneError}</p>}
++          <div className="flex justify-end gap-3">
++            <button type="button" onClick={() => setShowAddZoneModal(false)} className="btn-secondary">Cancel</button>
++            <button type="submit" disabled={addZoneSubmitting} className="btn-primary">{addZoneSubmitting ? 'Adding...' : 'Add Zone'}</button>
++          </div>
++        </form>
++      </Modal>
++    </div>
++  );
++}
+diff --git a/src/pages/ipd/AdmissionsPage.tsx b/src/pages/ipd/AdmissionsPage.tsx
+index 3948a5f..cdea16f 100644
+--- a/src/pages/ipd/AdmissionsPage.tsx
++++ b/src/pages/ipd/AdmissionsPage.tsx
+@@ -1,11 +1,13 @@
+ import { useEffect, useState } from 'react';
+ import { supabase } from '@/lib/supabase';
+ import { useRole } from '@/hooks/useRole';
++import { useAuth } from '@/contexts/AuthContext';
+ import { Modal } from '@/components/ui/Modal';
+ import { SearchInput } from '@/components/ui/SearchInput';
+ import { EmptyState } from '@/components/ui/EmptyState';
+ import type { Admission, Patient, Doctor, Bed, Ward, Room, Department } from '@/types';
+-import { Plus, ArrowLeft } from 'lucide-react';
++import { findOrCreateEpisodeInvoice, billClosedWardSegment, closeEpisode } from '@/lib/billing';
++import { Plus, ArrowLeft, ArrowRightLeft } from 'lucide-react';
+ import { formatDate, getStatusColor } from '@/lib/utils';
+ import { useNavigate } from 'react-router-dom';
+ import { useDebounce } from '@/hooks/useDebounce';
+@@ -21,10 +23,13 @@ export function AdmissionsPage() {
+   const [search, setSearch] = useState('');
+   const [showModal, setShowModal] = useState(false);
+   const [showDischargeModal, setShowDischargeModal] = useState(false);
++  const [showTransferModal, setShowTransferModal] = useState(false);
+   const [selectedAdmission, setSelectedAdmission] = useState<Admission | null>(null);
+   const [formError, setFormError] = useState('');
++  const [transferError, setTransferError] = useState('');
+   const debouncedSearch = useDebounce(search, 300);
+   const { isReceptionist } = useRole();
++  const { user } = useAuth();
+   const navigate = useNavigate();
+   const [departments, setDepartments] = useState<Department[]>([]);
+ 
+@@ -32,6 +37,12 @@ export function AdmissionsPage() {
+     department_id: '', patient_id: '', doctor_id: '', ward_id: '', room_id: '', bed_id: '', diagnosis: '', notes: ''
+   });
+ 
++  // Separate ward/room/bed selection state for the Transfer modal, so it
++  // doesn't collide with the Admit modal's own `form` state.
++  const [transferForm, setTransferForm] = useState({ ward_id: '', room_id: '', bed_id: '' });
++  const [transferRooms, setTransferRooms] = useState<Room[]>([]);
++  const [transferBeds, setTransferBeds] = useState<Bed[]>([]);
++
+   useEffect(() => { fetchData(); }, [debouncedSearch]);
+ 
+   // Rooms load whenever the selected ward changes
+@@ -49,6 +60,19 @@ export function AdmissionsPage() {
+       .then(({ data }) => setVacantBeds((data || []) as unknown as Bed[]));
+   }, [form.room_id]);
+ 
++  useEffect(() => {
++    if (!transferForm.ward_id) { setTransferRooms([]); return; }
++    supabase.from('rooms').select('*').eq('ward_id', transferForm.ward_id).eq('is_active', true)
++      .order('room_number').then(({ data }) => setTransferRooms((data || []) as unknown as Room[]));
++  }, [transferForm.ward_id]);
++
++  useEffect(() => {
++    if (!transferForm.room_id) { setTransferBeds([]); return; }
++    supabase.from('beds').select('*, room:rooms(room_number), ward:wards(name)')
++      .eq('room_id', transferForm.room_id).eq('status', 'VACANT').order('bed_number')
++      .then(({ data }) => setTransferBeds((data || []) as unknown as Bed[]));
++  }, [transferForm.room_id]);
++
+   async function fetchData() {
+     setLoading(true);
+     const query = supabase.from('admissions').select('*, patient:patients(full_name), doctor:doctors(full_name), bed:beds(bed_number, room:rooms(room_number), ward:wards(name))').order('admission_date', { ascending: false });
+@@ -84,16 +108,16 @@ export function AdmissionsPage() {
+   async function handleSubmit(e: React.FormEvent) {
+     e.preventDefault();
+     setFormError('');
+-    const { error } = await supabase.from('admissions').insert({
++    const { data: admission, error } = await supabase.from('admissions').insert({
+       patient_id: form.patient_id,
+       doctor_id: form.doctor_id || undefined,
+       bed_id: form.bed_id || undefined,
+       diagnosis: form.diagnosis,
+       notes: form.notes,
+       status: 'ADMITTED'
+-    });
+-    if (error) {
+-      if (error.code === '23505') {
++    }).select().single();
++    if (error || !admission) {
++      if (error?.code === '23505') {
+         setFormError('That bed or patient was just taken by another admission. Refresh and pick again.');
+       } else {
+         setFormError('Could not admit patient. Please try again.');
+@@ -101,6 +125,18 @@ export function AdmissionsPage() {
+       console.error(error);
+       return;
+     }
++    // Ready to receive any charge from minute one, even though the first
++    // ward segment's own charge isn't computed until it closes (transfer
++    // or discharge).
++    const episodeResult = await findOrCreateEpisodeInvoice(
++      { episode_type: 'ADMISSION', patient_id: form.patient_id, admission_id: admission.id },
++      user?.id
++    );
++    if ('error' in episodeResult) {
++      console.error('Admission succeeded but opening its billing episode failed:', episodeResult.error);
++      // Non-blocking: the patient is genuinely admitted; a missing
++      // episode can be created later the first time a charge needs one.
++    }
+     setShowModal(false);
+     setForm({ patient_id: '', doctor_id: '', ward_id: '', room_id: '', bed_id: '', diagnosis: '', notes: '', department_id: '' });
+     fetchData();
+@@ -117,11 +153,65 @@ export function AdmissionsPage() {
+       console.error(error);
+       return;
+     }
++    // Both billing steps are deliberately non-blocking -- a billing
++    // failure is logged, not allowed to trap a patient who has already
++    // been physically discharged.
++    const episodeResult = await findOrCreateEpisodeInvoice(
++      { episode_type: 'ADMISSION', patient_id: selectedAdmission.patient_id, admission_id: selectedAdmission.id },
++      user?.id
++    );
++    if ('error' in episodeResult) {
++      console.error('Discharge succeeded but billing the final ward segment failed to find its episode:', episodeResult.error);
++    } else {
++      const billErr = await billClosedWardSegment(selectedAdmission.id, episodeResult.invoiceId);
++      if (billErr) console.error('Discharge succeeded but billing the final ward segment failed:', billErr);
++      const closeErr = await closeEpisode(episodeResult.episodeId);
++      if (closeErr) console.error('Discharge succeeded but closing the billing episode failed:', closeErr);
++    }
+     setShowDischargeModal(false);
+     setSelectedAdmission(null);
+     fetchData();
+   }
+ 
++  function openTransferModal(admission: Admission) {
++    setSelectedAdmission(admission);
++    setTransferForm({ ward_id: '', room_id: '', bed_id: '' });
++    setTransferError('');
++    setShowTransferModal(true);
++  }
++
++  async function handleTransfer() {
++    if (!selectedAdmission || !transferForm.bed_id) return;
++    setTransferError('');
++    // Firing this UPDATE is what trips the transfer-aware bed trigger
++    // (migration 035): releases the old bed, closes the old ward-history
++    // segment, occupies the new bed, opens a new segment.
++    const { error } = await supabase.from('admissions')
++      .update({ bed_id: transferForm.bed_id })
++      .eq('id', selectedAdmission.id);
++    if (error) {
++      setTransferError('Could not transfer patient. Please try again.');
++      console.error(error);
++      return;
++    }
++    // Bill whatever segment the trigger just closed. Non-blocking -- the
++    // patient has already physically moved beds; a billing failure here
++    // shouldn't trap that.
++    const episodeResult = await findOrCreateEpisodeInvoice(
++      { episode_type: 'ADMISSION', patient_id: selectedAdmission.patient_id, admission_id: selectedAdmission.id },
++      user?.id
++    );
++    if ('error' in episodeResult) {
++      console.error('Transfer succeeded but billing the closed ward segment failed to find its episode:', episodeResult.error);
++    } else {
++      const billErr = await billClosedWardSegment(selectedAdmission.id, episodeResult.invoiceId);
++      if (billErr) console.error('Transfer succeeded but billing the closed ward segment failed:', billErr);
++    }
++    setShowTransferModal(false);
++    setSelectedAdmission(null);
++    fetchData();
++  }
++
+   function openAdmitModal() {
+     setForm({ patient_id: '', doctor_id: '', ward_id: '', room_id: '', bed_id: '', diagnosis: '', notes: '', department_id: '' });
+     setShowModal(true);
+@@ -176,9 +266,14 @@ export function AdmissionsPage() {
+                     <td className="table-cell text-gray-500">{formatDate(a.admission_date)}</td>
+                     <td className="table-cell text-right">
+                       {a.status === 'ADMITTED' && isReceptionist() && (
+-                        <button onClick={() => { setSelectedAdmission(a); setShowDischargeModal(true); }} className="text-xs bg-green-50 text-green-700 px-2 py-1 rounded hover:bg-green-100">
+-                          Discharge
+-                        </button>
++                        <div className="flex justify-end gap-2">
++                          <button onClick={() => openTransferModal(a)} className="text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded hover:bg-blue-100 flex items-center gap-1">
++                            <ArrowRightLeft className="h-3 w-3" /> Transfer
++                          </button>
++                          <button onClick={() => { setSelectedAdmission(a); setShowDischargeModal(true); }} className="text-xs bg-green-50 text-green-700 px-2 py-1 rounded hover:bg-green-100">
++                            Discharge
++                          </button>
++                        </div>
+                       )}
+                     </td>
+                   </tr>
+@@ -278,6 +373,47 @@ export function AdmissionsPage() {
+           </div>
+         </div>
+       </Modal>
++
++      <Modal isOpen={showTransferModal} onClose={() => setShowTransferModal(false)} title="Transfer Patient" size="sm">
++        <div className="space-y-4">
++          <p className="text-sm text-gray-600">
++            Transfer <strong>{selectedAdmission?.patient?.full_name}</strong> from {selectedAdmission?.bed?.ward?.name} / {selectedAdmission?.bed?.room?.room_number} - {selectedAdmission?.bed?.bed_number} to:
++          </p>
++          <div>
++            <label className="label">Ward *</label>
++            <select value={transferForm.ward_id}
++              onChange={e => setTransferForm({ ward_id: e.target.value, room_id: '', bed_id: '' })}
++              className="input">
++              <option value="">Select Ward</option>
++              {wards.map(w => <option key={w.id} value={w.id}>{w.name} ({w.ward_type})</option>)}
++            </select>
++          </div>
++          <div>
++            <label className="label">Room *</label>
++            <select disabled={!transferForm.ward_id} value={transferForm.room_id}
++              onChange={e => setTransferForm({ ...transferForm, room_id: e.target.value, bed_id: '' })}
++              className="input">
++              <option value="">{transferForm.ward_id ? 'Select Room' : 'Select a ward first'}</option>
++              {transferRooms.map(r => <option key={r.id} value={r.id}>{r.room_number}</option>)}
++            </select>
++          </div>
++          <div>
++            <label className="label">Bed *</label>
++            <select disabled={!transferForm.room_id} value={transferForm.bed_id}
++              onChange={e => setTransferForm({ ...transferForm, bed_id: e.target.value })}
++              className="input">
++              <option value="">{transferForm.room_id ? 'Select Bed' : 'Select a room first'}</option>
++              {transferBeds.map(b => <option key={b.id} value={b.id}>{b.bed_number}</option>)}
++            </select>
++            {transferForm.room_id && transferBeds.length === 0 && <p className="mt-1 text-xs text-red-500">No available beds in this room.</p>}
++          </div>
++          {transferError && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{transferError}</p>}
++          <div className="flex justify-end gap-3">
++            <button onClick={() => setShowTransferModal(false)} className="btn-secondary">Cancel</button>
++            <button onClick={handleTransfer} className="btn-primary" disabled={!transferForm.bed_id}>Transfer & Bill Segment</button>
++          </div>
++        </div>
++      </Modal>
+     </div>
+   );
+ }
+diff --git a/src/pages/prescriptions/PrescriptionsPage.tsx b/src/pages/prescriptions/PrescriptionsPage.tsx
+index 856594b..a7ac1a1 100644
+--- a/src/pages/prescriptions/PrescriptionsPage.tsx
++++ b/src/pages/prescriptions/PrescriptionsPage.tsx
+@@ -25,7 +25,7 @@ export function PrescriptionsPage() {
+   const [submitting, setSubmitting] = useState(false);
+   const debouncedSearch = useDebounce(search, 300);
+   const { user } = useAuth();
+-  const { isDoctor, isPharmacist } = useRole();
++  const { isDoctor } = useRole();
+   const navigate = useNavigate();
+ 
+   const [form, setForm] = useState({
+diff --git a/src/types/index.ts b/src/types/index.ts
+index 812854e..ad6feb5 100644
+--- a/src/types/index.ts
++++ b/src/types/index.ts
+@@ -115,6 +115,43 @@ export interface Admission {
+   bed?: Bed;
+ }
+ 
++// ---------------------------------------------------------------------
++// Billing episodes: one coherent encounter (an admission, an OPD visit,
++// or a standalone walk-in). Everything charged during that encounter
++// accumulates onto its one invoice. `status` (OPEN/CLOSED -- can new
++// charges still land here) is deliberately independent of the invoice's
++// own payment status (PENDING/PARTIAL/PAID) -- a discharged patient can
++// still owe money afterward; that's normal, not a bug.
++export type EpisodeType = 'ADMISSION' | 'OPD_VISIT' | 'WALK_IN';
++export type EpisodeStatus = 'OPEN' | 'CLOSED';
++
++export interface BillingEpisode {
++  id: string;
++  patient_id: string;
++  episode_type: EpisodeType;
++  admission_id?: string | null;
++  appointment_id?: string | null;
++  status: EpisodeStatus;
++  opened_at: string;
++  closed_at?: string | null;
++  created_by?: string | null;
++  created_at: string;
++}
++
++export interface AdmissionWardHistory {
++  id: string;
++  admission_id: string;
++  bed_id?: string | null;
++  ward_id?: string | null;
++  daily_rate: number;
++  started_at: string;
++  ended_at?: string | null;
++  invoice_item_id?: string | null;
++  created_at: string;
++  ward?: Ward;
++  bed?: Bed;
++}
++
+ export interface Medicine {
+   id: string;
+   name: string;
+@@ -222,6 +259,7 @@ export type InvoiceStatus = 'PENDING' | 'PARTIAL' | 'PAID';
+ export interface Invoice {
+   id: string;
+   patient_id: string;
++  episode_id?: string | null;
+   invoice_number?: string | null;
+   invoice_date: string;
+   subtotal: number;
+@@ -303,4 +341,61 @@ export interface DashboardStats {
+   pending_invoices: number;
+   today_admissions: number;
+   today_discharges: number;
++}
++
++// ---------------------------------------------------------------------
++// Profile change requests (#18): doctor-only self-service editing,
++// every change requiring admin approval before it takes effect.
++// target_table/target_id is generic (currently only 'doctors' is
++// allowed at the DB level) so this can extend to other tables later
++// without a second parallel mechanism.
++export type ProfileChangeRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
++
++export interface ProfileChangeRequest {
++  id: string;
++  target_table: 'doctors';
++  target_id: string;
++  requested_by: string;
++  changes: Record<string, unknown>;
++  status: ProfileChangeRequestStatus;
++  review_notes?: string | null;
++  reviewed_by?: string | null;
++  reviewed_at?: string | null;
++  created_at: string;
++  requester?: { full_name: string; email: string };
++  target?: Doctor;
++}
++
++export interface Notification {
++  id: string;
++  user_id: string;
++  title: string;
++  body: string;
++  link?: string | null;
++  is_read: boolean;
++  created_at: string;
++}
++
++// ---------------------------------------------------------------------
++// Hygiene module (#19): log-and-report, not proactive alerting.
++export type CleaningZoneType = 'ward' | 'floor' | 'chamber' | 'other';
++
++export interface CleaningZone {
++  id: string;
++  name: string;
++  zone_type: CleaningZoneType;
++  ward_id?: string | null;
++  is_active: boolean;
++  created_at: string;
++  ward?: Ward;
++}
++
++export interface CleaningLog {
++  id: string;
++  zone_id: string;
++  cleaned_at: string;
++  logged_by: string;
++  notes?: string | null;
++  created_at: string;
++  logged_by_profile?: { full_name: string };
+ }
+\ No newline at end of file
+diff --git a/supabase/migrations/031_prescription_revision_enforcement.sql b/supabase/migrations/031_prescription_revision_enforcement.sql
+index 5f9fc24..4176189 100644
+--- a/supabase/migrations/031_prescription_revision_enforcement.sql
++++ b/supabase/migrations/031_prescription_revision_enforcement.sql
+@@ -61,22 +61,34 @@ CREATE TRIGGER trg_enforce_prescription_revision
+ -- ---------------------------------------------------------------------
+ -- Trigger 2: purchases blocked against a superseded prescription,
+ -- regardless of remaining quantity -- the whole record becomes invalid
+--- the instant it's superseded, not just edited. Built as a database
+--- trigger rather than an application-level check alone because it's
++-- the instant it's superseded, not just edited. Also enforces the
++-- quantity cap itself (see migration 030) -- a purchase can't exceed
++-- what's still remaining on the prescribed line unless a pharmacist/
++-- admin has recorded an authorized override. Both built as database
++-- triggers rather than application-level checks alone because they're
+ -- directly money/inventory-adjacent -- the kind of rule that should hold
+ -- even if a future code path forgets to check it in JavaScript.
++--
++-- Originally just the supersession check (enforce_prescription_
++-- purchase_not_superseded); renamed to enforce_prescription_purchase_
++-- rules once it grew a second responsibility, after testing confirmed
++-- the quantity cap was client-only -- a direct insert of a quantity
++-- exceeding what remained, with no override fields set, succeeded
++-- without any objection from the database until this was added.
+ -- ---------------------------------------------------------------------
+-CREATE OR REPLACE FUNCTION enforce_prescription_purchase_not_superseded()
++CREATE OR REPLACE FUNCTION enforce_prescription_purchase_rules()
+ RETURNS TRIGGER AS $$
+ DECLARE
+   parent_superseded_by UUID;
++  prescribed_quantity NUMERIC(10,2);
++  already_purchased NUMERIC(10,2);
+ BEGIN
+   IF NEW.prescription_item_id IS NULL THEN
+     RETURN NEW;
+   END IF;
+ 
+-  SELECT p.superseded_by
+-    INTO parent_superseded_by
++  SELECT p.superseded_by, pi.quantity
++    INTO parent_superseded_by, prescribed_quantity
+     FROM prescription_items pi
+     JOIN prescriptions p ON p.id = pi.prescription_id
+     WHERE pi.id = NEW.prescription_item_id;
+@@ -85,11 +97,27 @@ BEGIN
+     RAISE EXCEPTION 'Cannot purchase against a superseded prescription -- it has been replaced by a newer prescription';
+   END IF;
+ 
++  -- prescribed_quantity NULL means "no cap recorded" (legacy prescription
++  -- item written before quantity existed) -- unlimited, same as before
++  -- this column existed. quantity_override_by set means a pharmacist/
++  -- admin has authorized going over the cap; the all-or-nothing CHECK
++  -- constraint from migration 030 guarantees that's never a partial,
++  -- unauthenticated-looking record.
++  IF prescribed_quantity IS NOT NULL AND NEW.quantity_override_by IS NULL THEN
++    SELECT COALESCE(SUM(quantity), 0) INTO already_purchased
++      FROM invoice_items WHERE prescription_item_id = NEW.prescription_item_id;
++    IF already_purchased + NEW.quantity > prescribed_quantity THEN
++      RAISE EXCEPTION 'Purchase exceeds remaining prescribed quantity (% remaining, % requested) -- use the quantity override if this is authorized', prescribed_quantity - already_purchased, NEW.quantity;
++    END IF;
++  END IF;
++
+   RETURN NEW;
+ END;
+ $$ LANGUAGE plpgsql;
+ 
+ DROP TRIGGER IF EXISTS trg_enforce_prescription_purchase_not_superseded ON invoice_items;
+-CREATE TRIGGER trg_enforce_prescription_purchase_not_superseded
++DROP FUNCTION IF EXISTS enforce_prescription_purchase_not_superseded();
++DROP TRIGGER IF EXISTS trg_enforce_prescription_purchase_rules ON invoice_items;
++CREATE TRIGGER trg_enforce_prescription_purchase_rules
+   BEFORE INSERT ON invoice_items
+-  FOR EACH ROW EXECUTE FUNCTION enforce_prescription_purchase_not_superseded();
++  FOR EACH ROW EXECUTE FUNCTION enforce_prescription_purchase_rules();
+diff --git a/supabase/migrations/034_billing_episodes.sql b/supabase/migrations/034_billing_episodes.sql
+new file mode 100644
+index 0000000..ab2564c
+--- /dev/null
++++ b/supabase/migrations/034_billing_episodes.sql
+@@ -0,0 +1,124 @@
++-- 034_billing_episodes.sql
++--
++-- Foundation for #7 (auto-bill consultations), #9 (prescribed-medicine
++-- purchasing), #14 (mandatory ward billing), and #15 (ward transfer
++-- billing): "which invoice does this charge belong to" needed a
++-- first-class answer. Searching for "the patient's current invoice" has
++-- a real failure mode -- an old, unpaid invoice from months ago could
++-- silently keep absorbing charges from a completely unrelated new
++-- visit, since "current" isn't a well-defined property of an invoice on
++-- its own.
++--
++-- One billing episode = one coherent encounter: the whole span of an
++-- admission (admit to discharge), one outpatient visit, or a standalone
++-- walk-in with neither. Everything inside that episode accumulates onto
++-- its one invoice.
++
++CREATE TABLE billing_episodes (
++  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
++  patient_id UUID REFERENCES patients(id) ON DELETE CASCADE NOT NULL,
++  episode_type TEXT NOT NULL CHECK (episode_type IN ('ADMISSION', 'OPD_VISIT', 'WALK_IN')),
++  -- ON DELETE RESTRICT, not SET NULL: the CHECK constraint below requires
++  -- an ADMISSION episode to always have admission_id set (and likewise
++  -- for OPD_VISIT/appointment_id), so a SET NULL cascade would be
++  -- guaranteed to fail that CHECK the moment it ever fired. Confirmed by
++  -- testing an actual delete against a real database, not by inspection
++  -- -- see the development log for how this was caught. RESTRICT is the
++  -- honest behavior: block the deletion outright with a clear error,
++  -- rather than attempting a null-out that was never going to work.
++  admission_id UUID REFERENCES admissions(id) ON DELETE RESTRICT,
++  appointment_id UUID REFERENCES appointments(id) ON DELETE RESTRICT,
++  status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'CLOSED')),
++  opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++  closed_at TIMESTAMPTZ,
++  created_by UUID REFERENCES profiles(id) ON DELETE SET NULL,
++  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++  CONSTRAINT billing_episodes_type_matches_link CHECK (
++    (episode_type = 'ADMISSION' AND admission_id IS NOT NULL AND appointment_id IS NULL) OR
++    (episode_type = 'OPD_VISIT' AND appointment_id IS NOT NULL AND admission_id IS NULL) OR
++    (episode_type = 'WALK_IN' AND admission_id IS NULL AND appointment_id IS NULL)
++  )
++);
++
++-- "Find the open episode for this admission/appointment" as a direct
++-- indexed lookup, and a hard guarantee (not just application discipline)
++-- that an admission/appointment never ends up with two open episodes.
++CREATE UNIQUE INDEX idx_billing_episodes_open_admission
++  ON billing_episodes(admission_id) WHERE status = 'OPEN' AND admission_id IS NOT NULL;
++CREATE UNIQUE INDEX idx_billing_episodes_open_appointment
++  ON billing_episodes(appointment_id) WHERE status = 'OPEN' AND appointment_id IS NOT NULL;
++
++-- WALK_IN has no natural one-to-one link to dedupe against the way
++-- ADMISSION/OPD_VISIT do -- without this, nothing stops a patient from
++-- accumulating multiple simultaneous open walk-in episodes, defeating
++-- the exact consolidation this table exists for. Confirmed missing by
++-- testing two back-to-back WALK_IN inserts for the same patient before
++-- adding this (both succeeded); re-tested after adding it (the second
++-- is correctly rejected).
++CREATE UNIQUE INDEX idx_billing_episodes_open_walkin
++  ON billing_episodes(patient_id) WHERE status = 'OPEN' AND episode_type = 'WALK_IN';
++
++CREATE INDEX idx_billing_episodes_patient ON billing_episodes(patient_id);
++
++ALTER TABLE invoices ADD COLUMN episode_id UUID REFERENCES billing_episodes(id) ON DELETE RESTRICT;
++-- One invoice per episode, enforced by the database, not convention.
++-- Partial (allows multiple NULLs, for invoices created before this
++-- migration or through some other future path that doesn't use
++-- episodes).
++CREATE UNIQUE INDEX idx_invoices_episode_id ON invoices(episode_id) WHERE episode_id IS NOT NULL;
++
++ALTER TABLE billing_episodes ENABLE ROW LEVEL SECURITY;
++
++CREATE POLICY "All authenticated can view billing episodes" ON billing_episodes
++  FOR SELECT USING (auth.role() = 'authenticated');
++
++CREATE POLICY "Admin and receptionist can manage billing episodes" ON billing_episodes
++  FOR ALL USING (get_current_user_role() IN ('admin', 'receptionist'));
++
++-- Doctors don't get general billing-episode management (that stays
++-- admin/receptionist, same as invoices always have been) -- but
++-- completing an appointment is a doctor action, and #7's auto-billing
++-- needs to find-or-create the OPD_VISIT episode (and its invoice, and
++-- the consultation line) at that exact moment. Scoped narrowly: a
++-- doctor can only INSERT an OPD_VISIT episode for their own appointment,
++-- never touch anyone else's, and can never UPDATE/DELETE one (closing an
++-- episode stays an admin/receptionist action via closeEpisode()).
++CREATE POLICY "Doctor can open an episode for own appointment" ON billing_episodes
++  FOR INSERT WITH CHECK (
++    get_current_user_role() = 'doctor'
++    AND episode_type = 'OPD_VISIT'
++    AND appointment_id IN (
++      SELECT a.id FROM appointments a
++      JOIN doctors d ON d.id = a.doctor_id
++      WHERE d.user_id = auth.uid()
++    )
++  );
++
++-- Mirror: the invoice and consultation line that findOrCreateEpisodeInvoice
++-- creates alongside that episode need the same narrow doctor-insert
++-- allowance. Existing "Admin and receptionist can manage invoices/invoice
++-- items" policies (002_rls.sql) are untouched -- these are additive,
++-- OR'd in by PostgreSQL's policy evaluation, not a replacement.
++CREATE POLICY "Doctor can create invoice for own OPD episode" ON invoices
++  FOR INSERT WITH CHECK (
++    get_current_user_role() = 'doctor'
++    AND episode_id IN (
++      SELECT be.id FROM billing_episodes be
++      JOIN appointments a ON a.id = be.appointment_id
++      JOIN doctors d ON d.id = a.doctor_id
++      WHERE d.user_id = auth.uid()
++    )
++  );
++
++CREATE POLICY "Doctor can add consultation line to own OPD invoice" ON invoice_items
++  FOR INSERT WITH CHECK (
++    get_current_user_role() = 'doctor'
++    AND item_type = 'consultation'
++    AND invoice_id IN (
++      SELECT i.id FROM invoices i
++      JOIN billing_episodes be ON be.id = i.episode_id
++      JOIN appointments a ON a.id = be.appointment_id
++      JOIN doctors d ON d.id = a.doctor_id
++      WHERE d.user_id = auth.uid()
++    )
++  );
+diff --git a/supabase/migrations/035_admission_ward_history.sql b/supabase/migrations/035_admission_ward_history.sql
+new file mode 100644
+index 0000000..86a1958
+--- /dev/null
++++ b/supabase/migrations/035_admission_ward_history.sql
+@@ -0,0 +1,116 @@
++-- 035_admission_ward_history.sql
++--
++-- Confirmed design (Option B): bill each ward segment of a stay
++-- separately, not the whole stay at whichever rate happens to be
++-- current when it's finally billed -- a patient in ICU for 2 days then
++-- General for 3 should show two distinct, correctly-priced lines.
++
++CREATE TABLE admission_ward_history (
++  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
++  admission_id UUID REFERENCES admissions(id) ON DELETE CASCADE NOT NULL,
++  bed_id UUID REFERENCES beds(id) ON DELETE SET NULL,
++  ward_id UUID REFERENCES wards(id) ON DELETE SET NULL,
++  -- Snapshotted at segment start, not looked up fresh when the charge is
++  -- eventually computed -- a later change to a ward's rate must never
++  -- retroactively reprice a stay that already happened at the old rate.
++  daily_rate DECIMAL(10,2) NOT NULL,
++  started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++  ended_at TIMESTAMPTZ,
++  invoice_item_id UUID REFERENCES invoice_items(id) ON DELETE SET NULL,
++  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
++);
++
++-- "Which ward is the patient in right now" must have exactly one answer.
++CREATE UNIQUE INDEX idx_admission_ward_history_open_segment
++  ON admission_ward_history(admission_id) WHERE ended_at IS NULL;
++
++CREATE INDEX idx_admission_ward_history_admission ON admission_ward_history(admission_id);
++
++ALTER TABLE admission_ward_history ENABLE ROW LEVEL SECURITY;
++
++CREATE POLICY "All authenticated can view ward history" ON admission_ward_history
++  FOR SELECT USING (auth.role() = 'authenticated');
++
++CREATE POLICY "Admin and receptionist can manage ward history" ON admission_ward_history
++  FOR ALL USING (get_current_user_role() IN ('admin', 'receptionist'));
++
++-- ---------------------------------------------------------------------
++-- The transfer-aware trigger fix.
++--
++-- handle_admission_bed() (003_functions.sql) only reacted to `status`
++-- changing to ADMITTED/DISCHARGED -- it had no logic at all for `bed_id`
++-- changing while status stayed ADMITTED. A transfer implemented as a
++-- naive `UPDATE admissions SET bed_id = new_bed` would have occupied the
++-- new bed but NEVER released the old one, leaving it stuck OCCUPIED
++-- forever with no patient in it.
++--
++-- Rewritten to handle three cases explicitly: new admission (occupy bed,
++-- open first segment), transfer (release old bed + close old segment,
++-- occupy new bed + open new segment), discharge (release bed, close
++-- segment). Billing is deliberately NOT in this trigger -- a low-level
++-- trigger responsible for something that must never be wrong (bed
++-- occupancy) stays simple and testable in isolation; charge computation
++-- is a separate, application-level concern (billClosedWardSegment() in
++-- billing.ts), triggered by the same action but not entangled with it.
++CREATE OR REPLACE FUNCTION handle_admission_bed()
++RETURNS TRIGGER AS $$
++DECLARE
++  v_daily_rate DECIMAL(10,2);
++BEGIN
++  -- New admission: occupy the bed, open the first ward-history segment.
++  IF TG_OP = 'INSERT' THEN
++    IF NEW.status = 'ADMITTED' AND NEW.bed_id IS NOT NULL THEN
++      UPDATE beds SET status = 'OCCUPIED' WHERE id = NEW.bed_id;
++      SELECT w.daily_rate INTO v_daily_rate
++        FROM beds b JOIN wards w ON w.id = b.ward_id WHERE b.id = NEW.bed_id;
++      INSERT INTO admission_ward_history (admission_id, bed_id, ward_id, daily_rate)
++        SELECT NEW.id, b.id, b.ward_id, v_daily_rate FROM beds b WHERE b.id = NEW.bed_id;
++    END IF;
++    RETURN NEW;
++  END IF;
++
++  -- Transfer: bed_id changed while still ADMITTED.
++  IF NEW.status = 'ADMITTED' AND OLD.status = 'ADMITTED'
++     AND NEW.bed_id IS DISTINCT FROM OLD.bed_id THEN
++    IF OLD.bed_id IS NOT NULL THEN
++      UPDATE beds SET status = 'VACANT' WHERE id = OLD.bed_id;
++      UPDATE admission_ward_history SET ended_at = NOW()
++        WHERE admission_id = NEW.id AND ended_at IS NULL;
++    END IF;
++    IF NEW.bed_id IS NOT NULL THEN
++      UPDATE beds SET status = 'OCCUPIED' WHERE id = NEW.bed_id;
++      SELECT w.daily_rate INTO v_daily_rate
++        FROM beds b JOIN wards w ON w.id = b.ward_id WHERE b.id = NEW.bed_id;
++      INSERT INTO admission_ward_history (admission_id, bed_id, ward_id, daily_rate)
++        SELECT NEW.id, b.id, b.ward_id, v_daily_rate FROM beds b WHERE b.id = NEW.bed_id;
++    END IF;
++    RETURN NEW;
++  END IF;
++
++  -- First-time admission via UPDATE (status changing TO ADMITTED).
++  IF NEW.status = 'ADMITTED' AND OLD.status IS DISTINCT FROM 'ADMITTED' AND NEW.bed_id IS NOT NULL THEN
++    UPDATE beds SET status = 'OCCUPIED' WHERE id = NEW.bed_id;
++    SELECT w.daily_rate INTO v_daily_rate
++      FROM beds b JOIN wards w ON w.id = b.ward_id WHERE b.id = NEW.bed_id;
++    INSERT INTO admission_ward_history (admission_id, bed_id, ward_id, daily_rate)
++      SELECT NEW.id, b.id, b.ward_id, v_daily_rate FROM beds b WHERE b.id = NEW.bed_id;
++    RETURN NEW;
++  END IF;
++
++  -- Discharge: release bed, close the open segment.
++  IF NEW.status = 'DISCHARGED' AND OLD.status IS DISTINCT FROM 'DISCHARGED' THEN
++    IF OLD.bed_id IS NOT NULL THEN
++      UPDATE beds SET status = 'VACANT' WHERE id = OLD.bed_id;
++    END IF;
++    UPDATE admission_ward_history SET ended_at = NOW()
++      WHERE admission_id = NEW.id AND ended_at IS NULL;
++    RETURN NEW;
++  END IF;
++
++  RETURN NEW;
++END;
++$$ LANGUAGE plpgsql;
++
++-- Trigger already exists (manage_bed_on_admission, 003_functions.sql) and
++-- fires AFTER INSERT OR UPDATE -- CREATE OR REPLACE FUNCTION above is
++-- sufficient, no need to touch the trigger definition itself.
+diff --git a/supabase/migrations/036_profile_change_requests_and_notifications.sql b/supabase/migrations/036_profile_change_requests_and_notifications.sql
+new file mode 100644
+index 0000000..7e9fa04
+--- /dev/null
++++ b/supabase/migrations/036_profile_change_requests_and_notifications.sql
+@@ -0,0 +1,254 @@
++-- 036_profile_change_requests_and_notifications.sql
++--
++-- #18: doctor-only self-service editing (everyone else stays fully
++-- admin-managed), restricted to 8 fields, every change requiring admin
++-- approval before it takes effect, plus notifications for both sides.
++-- Depends on A1 (doctor account linking, migration 028) -- every field
++-- on the allow-list lives on `doctors`, which only has a reliable link
++-- back to a login account because A1 built one.
++
++-- ---------------------------------------------------------------------
++-- Generic request/approval table, not doctors-only hardcoded. The CHECK
++-- currently only allows 'doctors', but the shape is ready to extend to
++-- other tables later without a second parallel mechanism.
++CREATE TABLE profile_change_requests (
++  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
++  target_table TEXT NOT NULL CHECK (target_table IN ('doctors')),
++  target_id UUID NOT NULL,
++  requested_by UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
++  changes JSONB NOT NULL,
++  status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED')),
++  review_notes TEXT,
++  reviewed_by UUID REFERENCES profiles(id) ON DELETE SET NULL,
++  reviewed_at TIMESTAMPTZ,
++  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
++);
++
++CREATE INDEX idx_profile_change_requests_status ON profile_change_requests(status);
++CREATE INDEX idx_profile_change_requests_requested_by ON profile_change_requests(requested_by);
++
++-- ---------------------------------------------------------------------
++-- Validation trigger: field allow-list + ownership check, enforced at
++-- INSERT time, not just hidden from the self-edit form's UI (which a
++-- direct API call could otherwise bypass). `role` is not, and will never
++-- be, in this list -- this system must never become a side-door around
++-- 007_prevent_role_self_escalation.sql's protection.
++CREATE OR REPLACE FUNCTION validate_profile_change_request()
++RETURNS TRIGGER
++LANGUAGE plpgsql
++SECURITY DEFINER
++SET search_path = public
++AS $$
++DECLARE
++  allowed_keys TEXT[] := ARRAY[
++    'phone', 'specialization', 'experience_years', 'consultation_fee',
++    'available_days', 'available_time_start', 'available_time_end', 'is_active'
++  ];
++  k TEXT;
++BEGIN
++  IF NEW.target_table = 'doctors' THEN
++    FOR k IN SELECT jsonb_object_keys(NEW.changes) LOOP
++      IF NOT (k = ANY(allowed_keys)) THEN
++        RAISE EXCEPTION 'Field "%" is not self-editable for %', k, NEW.target_table;
++      END IF;
++    END LOOP;
++
++    IF NOT EXISTS (SELECT 1 FROM doctors WHERE id = NEW.target_id AND user_id = NEW.requested_by) THEN
++      RAISE EXCEPTION 'You can only request changes to your own doctor record';
++    END IF;
++  END IF;
++
++  RETURN NEW;
++END;
++$$;
++
++CREATE TRIGGER trg_validate_profile_change_request
++  BEFORE INSERT ON profile_change_requests
++  FOR EACH ROW EXECUTE FUNCTION validate_profile_change_request();
++
++-- ---------------------------------------------------------------------
++-- notifications: new infrastructure. Deliberately NOT directly
++-- insertable by ordinary clients -- RLS only allows a user to SELECT
++-- their own notifications and UPDATE them to mark read. Every actual
++-- INSERT happens through the SECURITY DEFINER triggers below, which
++-- closes off the obvious spoofing risk of a client writing directly
++-- into another user's notification feed.
++CREATE TABLE notifications (
++  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
++  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
++  title TEXT NOT NULL,
++  body TEXT NOT NULL,
++  link TEXT,
++  is_read BOOLEAN NOT NULL DEFAULT FALSE,
++  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
++);
++
++CREATE INDEX idx_notifications_user_unread ON notifications(user_id) WHERE is_read = FALSE;
++
++ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
++
++CREATE POLICY "Users can view own notifications" ON notifications
++  FOR SELECT USING (user_id = auth.uid());
++
++CREATE POLICY "Users can mark own notifications read" ON notifications
++  FOR UPDATE USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
++
++-- ---------------------------------------------------------------------
++-- Fan-out: a new request notifies every admin.
++CREATE OR REPLACE FUNCTION notify_admins_of_new_request()
++RETURNS TRIGGER
++LANGUAGE plpgsql
++SECURITY DEFINER
++SET search_path = public
++AS $$
++DECLARE
++  requester_name TEXT;
++BEGIN
++  SELECT full_name INTO requester_name FROM profiles WHERE id = NEW.requested_by;
++  INSERT INTO notifications (user_id, title, body, link)
++  SELECT id, 'New profile change request',
++         COALESCE(requester_name, 'A user') || ' has requested a profile change awaiting your review.',
++         '/settings'
++  FROM profiles WHERE role = 'admin';
++  RETURN NEW;
++END;
++$$;
++
++CREATE TRIGGER trg_notify_admins_of_new_request
++  AFTER INSERT ON profile_change_requests
++  FOR EACH ROW EXECUTE FUNCTION notify_admins_of_new_request();
++
++-- Reviewed: notifies the original requester of the outcome.
++CREATE OR REPLACE FUNCTION notify_requester_of_review()
++RETURNS TRIGGER
++LANGUAGE plpgsql
++SECURITY DEFINER
++SET search_path = public
++AS $$
++BEGIN
++  IF NEW.status IN ('APPROVED', 'REJECTED') AND OLD.status = 'PENDING' THEN
++    INSERT INTO notifications (user_id, title, body, link)
++    VALUES (
++      NEW.requested_by,
++      CASE WHEN NEW.status = 'APPROVED' THEN 'Profile change approved' ELSE 'Profile change rejected' END,
++      COALESCE(NEW.review_notes, CASE WHEN NEW.status = 'APPROVED' THEN 'Your requested change was approved.' ELSE 'Your requested change was rejected.' END),
++      '/settings'
++    );
++  END IF;
++  RETURN NEW;
++END;
++$$;
++
++CREATE TRIGGER trg_notify_requester_of_review
++  AFTER UPDATE ON profile_change_requests
++  FOR EACH ROW EXECUTE FUNCTION notify_requester_of_review();
++
++-- ---------------------------------------------------------------------
++-- Atomic approval / rejection.
++--
++-- Both begin with a role check. Using `<>` here was tested against a
++-- real unauthenticated call (auth.uid() IS NULL) and found to silently
++-- do nothing: get_current_user_role() returns NULL when there's no
++-- authenticated user, and SQL's `<>` follows three-valued logic --
++-- `NULL <> 'admin'` evaluates to NULL, and `IF NULL THEN ...` in
++-- PL/pgSQL is treated as false, so the RAISE EXCEPTION was silently
++-- skipped and execution fell through to the update. A SECURITY DEFINER
++-- function runs with elevated privileges regardless of the caller's own
++-- RLS restrictions, so a broken check here is directly exploitable, not
++-- cosmetic. `IS DISTINCT FROM` treats NULL as genuinely distinct from
++-- 'admin' (evaluates to TRUE), correctly raising the exception whether
++-- the caller's role is some other real role or nothing at all.
++--
++-- (007_prevent_role_self_escalation.sql's `<>` usage is safe: it's
++-- guarded by `auth.uid() IS NOT NULL AND ...`, and AND short-circuits to
++-- FALSE regardless of the NULL on the other side -- deliberately
++-- different, since a NULL auth.uid() there means a trusted server
++-- context that should be left alone. There is no equivalent legitimate
++-- unauthenticated path to "approve this request", so that reasoning
++-- doesn't apply here.)
++CREATE OR REPLACE FUNCTION approve_profile_change_request(request_id UUID, notes TEXT DEFAULT NULL)
++RETURNS VOID
++LANGUAGE plpgsql
++SECURITY DEFINER
++SET search_path = public
++AS $$
++DECLARE
++  req RECORD;
++BEGIN
++  IF get_current_user_role() IS DISTINCT FROM 'admin' THEN
++    RAISE EXCEPTION 'Only administrators can approve profile change requests';
++  END IF;
++
++  SELECT * INTO req FROM profile_change_requests WHERE id = request_id;
++  IF req IS NULL THEN
++    RAISE EXCEPTION 'Request not found';
++  END IF;
++  IF req.status <> 'PENDING' THEN
++    RAISE EXCEPTION 'This request has already been reviewed';
++  END IF;
++
++  IF req.target_table = 'doctors' THEN
++    UPDATE doctors SET
++      phone = COALESCE(req.changes->>'phone', phone),
++      specialization = COALESCE(req.changes->>'specialization', specialization),
++      experience_years = COALESCE((req.changes->>'experience_years')::INTEGER, experience_years),
++      consultation_fee = COALESCE((req.changes->>'consultation_fee')::DECIMAL, consultation_fee),
++      available_days = COALESCE(
++        (SELECT array_agg(x) FROM jsonb_array_elements_text(req.changes->'available_days') x),
++        available_days
++      ),
++      available_time_start = COALESCE((req.changes->>'available_time_start')::TIME, available_time_start),
++      available_time_end = COALESCE((req.changes->>'available_time_end')::TIME, available_time_end),
++      is_active = COALESCE((req.changes->>'is_active')::BOOLEAN, is_active)
++    WHERE id = req.target_id;
++  END IF;
++
++  UPDATE profile_change_requests
++  SET status = 'APPROVED', review_notes = notes, reviewed_by = auth.uid(), reviewed_at = NOW()
++  WHERE id = request_id;
++END;
++$$;
++
++CREATE OR REPLACE FUNCTION reject_profile_change_request(request_id UUID, notes TEXT DEFAULT NULL)
++RETURNS VOID
++LANGUAGE plpgsql
++SECURITY DEFINER
++SET search_path = public
++AS $$
++DECLARE
++  req RECORD;
++BEGIN
++  IF get_current_user_role() IS DISTINCT FROM 'admin' THEN
++    RAISE EXCEPTION 'Only administrators can reject profile change requests';
++  END IF;
++
++  SELECT * INTO req FROM profile_change_requests WHERE id = request_id;
++  IF req IS NULL THEN
++    RAISE EXCEPTION 'Request not found';
++  END IF;
++  IF req.status <> 'PENDING' THEN
++    RAISE EXCEPTION 'This request has already been reviewed';
++  END IF;
++
++  UPDATE profile_change_requests
++  SET status = 'REJECTED', review_notes = notes, reviewed_by = auth.uid(), reviewed_at = NOW()
++  WHERE id = request_id;
++END;
++$$;
++
++-- ---------------------------------------------------------------------
++-- RLS on profile_change_requests itself.
++ALTER TABLE profile_change_requests ENABLE ROW LEVEL SECURITY;
++
++CREATE POLICY "Admin can view all requests" ON profile_change_requests
++  FOR SELECT USING (get_current_user_role() = 'admin');
++
++CREATE POLICY "Doctor can view own requests" ON profile_change_requests
++  FOR SELECT USING (requested_by = auth.uid());
++
++CREATE POLICY "Doctor can create own requests" ON profile_change_requests
++  FOR INSERT WITH CHECK (get_current_user_role() = 'doctor' AND requested_by = auth.uid());
++
++-- No UPDATE policy for ordinary clients at all -- review only happens
++-- through the SECURITY DEFINER approve/reject functions above, which
++-- run with their own elevated privileges and do their own role check.
+diff --git a/supabase/migrations/037_hygiene_module.sql b/supabase/migrations/037_hygiene_module.sql
+new file mode 100644
+index 0000000..41c00b4
+--- /dev/null
++++ b/supabase/migrations/037_hygiene_module.sql
+@@ -0,0 +1,80 @@
++-- 037_hygiene_module.sql
++--
++-- #19, the final item from the original list. Genuinely greenfield --
++-- nothing in the schema or app touched cleaning, floors, or housekeeping
++-- before this. Three scoping decisions confirmed before writing this:
++-- (1) who logs a cleaning -- admin and receptionist, no new role needed;
++-- (2) what counts as a cleanable location -- a generic cleaning_zones
++-- table, not three hardcoded kinds; (3) enforcement style -- log-and-
++-- report, not proactive alerting/scheduling.
++
++-- ---------------------------------------------------------------------
++-- cleaning_zones: one shape for three different kinds of location.
++-- ward_id is optional and only meaningful when zone_type = 'ward' --
++-- wards are the one location type with an existing concrete record
++-- elsewhere in the schema to link back to (floors and doctor chambers
++-- have no corresponding table; doctors aren't assigned a physical room
++-- anywhere in this system).
++CREATE TABLE cleaning_zones (
++  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
++  name TEXT NOT NULL,
++  zone_type TEXT NOT NULL CHECK (zone_type IN ('ward', 'floor', 'chamber', 'other')),
++  ward_id UUID REFERENCES wards(id) ON DELETE SET NULL,
++  is_active BOOLEAN NOT NULL DEFAULT TRUE,
++  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
++);
++
++-- A ward should never back two active zones -- that would silently split
++-- its cleaning history across two unrelated records.
++CREATE UNIQUE INDEX idx_cleaning_zones_one_per_ward
++  ON cleaning_zones(ward_id) WHERE ward_id IS NOT NULL AND is_active = TRUE;
++
++-- ---------------------------------------------------------------------
++-- cleaning_logs: the actual record of a cleaning happening.
++CREATE TABLE cleaning_logs (
++  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
++  zone_id UUID REFERENCES cleaning_zones(id) ON DELETE CASCADE NOT NULL,
++  cleaned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++  logged_by UUID REFERENCES profiles(id) ON DELETE SET NULL NOT NULL,
++  notes TEXT,
++  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
++);
++
++CREATE INDEX idx_cleaning_logs_zone_date ON cleaning_logs(zone_id, cleaned_at);
++
++ALTER TABLE cleaning_zones ENABLE ROW LEVEL SECURITY;
++ALTER TABLE cleaning_logs ENABLE ROW LEVEL SECURITY;
++
++CREATE POLICY "All authenticated can view cleaning zones" ON cleaning_zones
++  FOR SELECT USING (auth.role() = 'authenticated');
++
++CREATE POLICY "Admin and receptionist can manage cleaning zones" ON cleaning_zones
++  FOR ALL USING (get_current_user_role() IN ('admin', 'receptionist'))
++  WITH CHECK (get_current_user_role() IN ('admin', 'receptionist'));
++
++CREATE POLICY "All authenticated can view cleaning logs" ON cleaning_logs
++  FOR SELECT USING (auth.role() = 'authenticated');
++
++-- Matches the confirmed scope exactly: only admin/receptionist can log a
++-- cleaning, and only as themselves (logged_by = auth.uid()), never on
++-- someone else's behalf.
++CREATE POLICY "Admin and receptionist can log cleaning" ON cleaning_logs
++  FOR INSERT WITH CHECK (get_current_user_role() IN ('admin', 'receptionist') AND logged_by = auth.uid());
++
++-- ---------------------------------------------------------------------
++-- Seed: one cleaning_zones row per active ward (concrete, already exists
++-- in the schema), plus a few illustrative floor/chamber entries. These
++-- counts are illustrative, matching the "say 3 floors" framing of the
++-- original request, not a claim about the real hospital's actual floor
++-- plan -- more can be added through the UI's Add Zone action.
++INSERT INTO cleaning_zones (name, zone_type, ward_id, is_active)
++SELECT w.name, 'ward', w.id, TRUE FROM wards w;
++
++INSERT INTO cleaning_zones (name, zone_type, is_active) VALUES
++  ('Ground Floor', 'floor', TRUE),
++  ('First Floor', 'floor', TRUE),
++  ('Second Floor', 'floor', TRUE);
++
++INSERT INTO cleaning_zones (name, zone_type, is_active)
++SELECT 'Dr. ' || d.full_name || ' - Chamber', 'chamber', TRUE
++FROM doctors d ORDER BY d.created_at LIMIT 5;

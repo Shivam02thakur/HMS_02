@@ -2,6 +2,8 @@
 -- Adds total_departments, today_admissions, today_discharges to
 -- get_dashboard_stats(). Full function replacement (same safe-to-rerun
 -- pattern as 017), no migration guard needed.
+DROP FUNCTION IF EXISTS public.get_dashboard_stats();
+
 CREATE OR REPLACE FUNCTION get_dashboard_stats()
 RETURNS JSON AS $$
 DECLARE
