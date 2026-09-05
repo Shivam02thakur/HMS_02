@@ -156,8 +156,8 @@ export interface Prescription {
   doctor?: Doctor;
   items?: PrescriptionItem[];
   lab_orders?: LabOrder[];
-  revision_of_prescription?: Pick<Prescription, 'id' | 'prescription_number' | 'created_at'> | null;
-  superseded_by_prescription?: Pick<Prescription, 'id' | 'prescription_number' | 'created_at'> | null;
+  revision_of_prescription?: { id: string; prescription_number: string | null; created_at: string | null } | null;
+  superseded_by_prescription?: { id: string; prescription_number: string | null; created_at: string | null } | null;
 }
 
 export interface PrescriptionItem {

@@ -92,7 +92,7 @@ export function PrescriptionsPage() {
     // not a `prescriptions!fk_name(...)` embed -- see PrescriptionDetailPage.tsx
     // for why (that self-referencing embed pattern breaks whenever
     // PostgREST's schema cache hasn't been reloaded since the last migration).
-    let query = supabase.from('prescriptions')
+    const query = supabase.from('prescriptions')
       .select('*, patient:patients(full_name), doctor:doctors(full_name), items:prescription_items(*, medicine:medicines(name)), lab_orders(*, test:lab_tests(name))')
       .order('created_at', { ascending: false });
     const { data, error: prescriptionsError } = await query;

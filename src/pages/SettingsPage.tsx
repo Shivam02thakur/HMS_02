@@ -88,7 +88,7 @@ export function SettingsPage() {
           specialization: normalizeSpecialization(userForm.specialization),
           qualification: userForm.qualification.trim(),
           registration_no: userForm.registration_no.trim(),
-          consultation_fee: parseFloat(userForm.consultation_fee) || 0,
+          consultation_fee: parseFloat(userForm.consultation_fee),
           experience_years: parseInt(userForm.experience_years) || 0,
           available_days: userForm.available_days,
           available_time_start: userForm.available_time_start,
@@ -309,7 +309,7 @@ export function SettingsPage() {
                 </div>
                 <div>
                   <label className="label">Experience (Years)</label>
-                  <input type="number" value={userForm.experience_years} onChange={e => setUserForm({ ...userForm, experience_years: e.target.value })} className="input" />
+                  <input type="number" min="0" value={userForm.experience_years} onChange={e => setUserForm({ ...userForm, experience_years: e.target.value })} className="input" />
                 </div>
                 <div>
                   <label className="label">Available From *</label>

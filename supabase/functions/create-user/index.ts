@@ -21,6 +21,91 @@ const allowedRoles: Role[] = [
   "lab_technician",
 ];
 
+// Mirrors the exact rules already enforced by the standalone Add Doctor
+// form (src/pages/doctors/DoctorsPage.tsx), so a doctor created through
+// either screen ends up with an identically-shaped, identically-valid
+// record rather than two independently-drifting sets of rules.
+interface DoctorFields {
+  department_id: string;
+  phone: string;
+  specialization?: string;
+  qualification?: string;
+  registration_no?: string;
+  consultation_fee: number;
+  experience_years?: number;
+  available_days: string[];
+  available_time_start: string;
+  available_time_end: string;
+  is_active?: boolean;
+}
+
+function validateDoctorFields(input: unknown): { fields: DoctorFields } | { error: string } {
+  if (!input || typeof input !== "object") {
+    return { error: "Doctor details are required when role is Doctor." };
+  }
+  const d = input as Record<string, unknown>;
+
+  const department_id = String(d.department_id ?? "").trim();
+  if (!department_id) {
+    return { error: "Department is required." };
+  }
+
+  const phone = String(d.phone ?? "").trim();
+  if (!/^[0-9]{10}$/.test(phone)) {
+    return { error: "Phone must be exactly 10 digits." };
+  }
+
+  const consultation_fee = Number(d.consultation_fee);
+  if (!Number.isFinite(consultation_fee) || consultation_fee < 0) {
+    return { error: "Consultation fee must be a non-negative number." };
+  }
+
+  const available_days = Array.isArray(d.available_days) ? d.available_days.map(String) : [];
+  if (available_days.length === 0) {
+    return { error: "Select at least one available day." };
+  }
+
+  const available_time_start = String(d.available_time_start ?? "");
+  const available_time_end = String(d.available_time_end ?? "");
+
+  if (!available_time_start || !available_time_end) {
+    return { error: "Available From and Available To are required." };
+  }
+  if (available_time_end <= available_time_start) {
+    return { error: "Available To must be after Available From." };
+  }
+
+  const experience_years = d.experience_years === undefined || d.experience_years === null
+    ? undefined
+    : Number(d.experience_years);
+  if (experience_years !== undefined && (!Number.isFinite(experience_years) || experience_years < 0)) {
+    return { error: "Experience (years) must be a non-negative number." };
+  }
+
+  if (
+    d.is_active !== undefined &&
+    typeof d.is_active !== "boolean"
+  ) {
+    return { error: "is_active must be a boolean." };
+  }
+
+  return {
+    fields: {
+      department_id,
+      phone,
+      specialization: d.specialization ? String(d.specialization).trim() : undefined,
+      qualification: d.qualification ? String(d.qualification).trim() : undefined,
+      registration_no: d.registration_no ? String(d.registration_no).trim() : undefined,
+      consultation_fee,
+      experience_years,
+      available_days,
+      available_time_start,
+      available_time_end,
+      is_active: d.is_active === undefined ? true : typeof d.is_active === "boolean" ? d.is_active : true,
+    },
+  };
+}
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -94,6 +179,19 @@ Deno.serve(async (req) => {
       return json({ error: "Invalid role selected." }, 400);
     }
 
+    // Doctor-role user creation and doctor-record creation are one atomic
+    // action: validated here, BEFORE the auth user is created, so a
+    // validation failure never results in a login existing with no way to
+    // attach a doctor record to it.
+    let doctorFields: DoctorFields | null = null;
+    if (role === "doctor") {
+      const result = validateDoctorFields(body.doctor);
+      if ("error" in result) {
+        return json({ error: result.error }, 400);
+      }
+      doctorFields = result.fields;
+    }
+
     const { data, error: createError } =
       await callerClient.auth.admin.createUser({
         email,
@@ -132,6 +230,39 @@ Deno.serve(async (req) => {
       return json({
         error: `User account was created, but setting its role failed: ${roleFixError.message}. Fix it manually in the profiles table.`,
       }, 500);
+    }
+
+    // The login has already been created by this point (a separate
+    // Supabase Auth call, not something that can be transactionally rolled
+    // back alongside this Postgres insert) -- so if the doctors insert
+    // fails, the response has to tell the truth about the exact
+    // half-completed state rather than imply total failure.
+    if (role === "doctor" && doctorFields) {
+      const { error: doctorInsertError } = await callerClient.from("doctors").insert({
+        user_id: data.user.id,
+        full_name: fullName,
+        email,
+        phone: doctorFields.phone,
+        department_id: doctorFields.department_id,
+        specialization: doctorFields.specialization,
+        qualification: doctorFields.qualification,
+        registration_no: doctorFields.registration_no,
+        consultation_fee: doctorFields.consultation_fee,
+        experience_years: doctorFields.experience_years,
+        available_days: doctorFields.available_days,
+        available_time_start: doctorFields.available_time_start,
+        available_time_end: doctorFields.available_time_end,
+        is_active: doctorFields.is_active,
+      });
+
+      if (doctorInsertError) {
+        return json({
+          error:
+            `The login for ${email} was created and is usable, but it isn't linked to a doctor record yet ` +
+            `(${doctorInsertError.message}). Go to Doctors -> Add Doctor and create the record manually, ` +
+            `then set doctors.user_id for this login to ${data.user.id}.`,
+        }, 500);
+      }
     }
 
     return json({
