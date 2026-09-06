@@ -6,6 +6,7 @@ import { Modal } from '@/components/ui/Modal';
 import { SearchInput } from '@/components/ui/SearchInput';
 import { EmptyState } from '@/components/ui/EmptyState';
 import type { Appointment, Patient, Doctor, Department } from '@/types';
+import { findOrCreateEpisodeInvoice } from '@/lib/billing';
 import { Plus, User, Stethoscope, CheckCircle, XCircle, AlertCircle, RefreshCw } from 'lucide-react';
 import { formatDate, formatTime, getStatusColor, TIME_SLOTS } from '@/lib/utils';
 import { useDebounce } from '@/hooks/useDebounce';
@@ -21,6 +22,8 @@ export function AppointmentsPage() {
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [showCompleteModal, setShowCompleteModal] = useState(false);
+  const [completeError, setCompleteError] = useState('');
+  const [completing, setCompleting] = useState(false);
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
   const [showRescheduleModal, setShowRescheduleModal] = useState(false);
   const [rescheduleForm, setRescheduleForm] = useState({ appointment_date: '', appointment_time: '' });
@@ -127,7 +130,67 @@ export function AppointmentsPage() {
 
   function openCompleteModal(appt: Appointment) {
     setSelectedAppointment(appt);
+    setCompleteError('');
     setShowCompleteModal(true);
+  }
+
+  /**
+   * #7: completing an appointment finds-or-creates the OPD_VISIT episode
+   * for it and adds a consultation line, in the exact description/pricing
+   * format the manual Add Item flow already uses -- a consultation charge
+   * looks identical regardless of which path created it.
+   *
+   * Returns a boolean rather than relying on reading `completeError` back
+   * after calling setCompleteError -- a stale-closure bug caught during
+   * this work: checking React state immediately after setting it inside
+   * the same async function doesn't see the just-set value (the state
+   * update is queued, not applied synchronously), so the caller would
+   * have seen the OLD (empty) error state and closed the modal on a
+   * failure. Returning the outcome directly sidesteps that entirely.
+   */
+  async function handleComplete(appt: Appointment): Promise<boolean> {
+    setCompleting(true);
+    setCompleteError('');
+
+    const { error: statusError } = await supabase.from('appointments').update({ status: 'COMPLETED' }).eq('id', appt.id);
+    if (statusError) {
+      setCompleteError('Could not complete the appointment. Please try again.');
+      setCompleting(false);
+      return false;
+    }
+
+    const episodeResult = await findOrCreateEpisodeInvoice(
+      { episode_type: 'OPD_VISIT', patient_id: appt.patient_id, appointment_id: appt.id },
+      user?.id
+    );
+    if ('error' in episodeResult) {
+      // The appointment is genuinely completed at this point -- don't
+      // undo that over a billing hiccup, but do surface it so it isn't
+      // silently missing from the invoice.
+      console.error('Appointment completed but opening its billing episode failed:', episodeResult.error);
+      setCompleteError('Appointment marked complete, but the consultation charge could not be added automatically. Add it manually from Billing.');
+      setCompleting(false);
+      return false;
+    }
+
+    const { error: itemError } = await supabase.from('invoice_items').insert({
+      invoice_id: episodeResult.invoiceId,
+      item_type: 'consultation',
+      description: `Consultation - Dr. ${appt.doctor?.full_name}`,
+      quantity: 1,
+      unit_price: appt.doctor?.consultation_fee || 0,
+      total_price: appt.doctor?.consultation_fee || 0,
+      reference_id: appt.doctor_id,
+    });
+    if (itemError) {
+      console.error('Appointment completed but adding the consultation charge failed:', itemError);
+      setCompleteError('Appointment marked complete, but the consultation charge could not be added automatically. Add it manually from Billing.');
+      setCompleting(false);
+      return false;
+    }
+
+    setCompleting(false);
+    return true;
   }
 
   function getSlotInfo(): { slots: string[]; reason: string | null } {
@@ -345,14 +408,19 @@ export function AppointmentsPage() {
       <Modal isOpen={showCompleteModal} onClose={() => setShowCompleteModal(false)} title="Complete Appointment">
         <div className="space-y-4">
           <p className="text-sm text-gray-600">Complete consultation for <strong>{selectedAppointment?.patient?.full_name}</strong> with Dr. {selectedAppointment?.doctor?.full_name}?</p>
+          <p className="text-xs text-gray-500">This will automatically add a consultation charge (₹{selectedAppointment?.doctor?.consultation_fee}) to this patient's visit invoice.</p>
+          {completeError && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{completeError}</p>}
           <div className="flex justify-end gap-3">
             <button onClick={() => setShowCompleteModal(false)} className="btn-secondary">Cancel</button>
-            <button onClick={async () => {
+            <button disabled={completing} onClick={async () => {
               if (selectedAppointment) {
-                await updateStatus(selectedAppointment.id, 'COMPLETED');
-                setShowCompleteModal(false);
+                const ok = await handleComplete(selectedAppointment);
+                if (ok) {
+                  setShowCompleteModal(false);
+                  fetchData();
+                }
               }
-            }} className="btn-primary">Complete</button>
+            }} className="btn-primary">{completing ? 'Completing...' : 'Complete'}</button>
           </div>
         </div>
       </Modal>
