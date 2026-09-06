@@ -115,6 +115,43 @@ export interface Admission {
   bed?: Bed;
 }
 
+// ---------------------------------------------------------------------
+// Billing episodes: one coherent encounter (an admission, an OPD visit,
+// or a standalone walk-in). Everything charged during that encounter
+// accumulates onto its one invoice. `status` (OPEN/CLOSED -- can new
+// charges still land here) is deliberately independent of the invoice's
+// own payment status (PENDING/PARTIAL/PAID) -- a discharged patient can
+// still owe money afterward; that's normal, not a bug.
+export type EpisodeType = 'ADMISSION' | 'OPD_VISIT' | 'WALK_IN';
+export type EpisodeStatus = 'OPEN' | 'CLOSED';
+
+export interface BillingEpisode {
+  id: string;
+  patient_id: string;
+  episode_type: EpisodeType;
+  admission_id?: string | null;
+  appointment_id?: string | null;
+  status: EpisodeStatus;
+  opened_at: string;
+  closed_at?: string | null;
+  created_by?: string | null;
+  created_at: string;
+}
+
+export interface AdmissionWardHistory {
+  id: string;
+  admission_id: string;
+  bed_id?: string | null;
+  ward_id?: string | null;
+  daily_rate: number;
+  started_at: string;
+  ended_at?: string | null;
+  invoice_item_id?: string | null;
+  created_at: string;
+  ward?: Ward;
+  bed?: Bed;
+}
+
 export interface Medicine {
   id: string;
   name: string;
@@ -156,8 +193,8 @@ export interface Prescription {
   doctor?: Doctor;
   items?: PrescriptionItem[];
   lab_orders?: LabOrder[];
-  revision_of_prescription?: { id: string; prescription_number: string | null; created_at: string | null } | null;
-  superseded_by_prescription?: { id: string; prescription_number: string | null; created_at: string | null } | null;
+  revision_of_prescription?: { id: string; prescription_number: string; created_at: string | null } | null;
+  superseded_by_prescription?: { id: string; prescription_number: string; created_at: string | null } | null;
 }
 
 export interface PrescriptionItem {
@@ -221,6 +258,7 @@ export type InvoiceStatus = 'PENDING' | 'PARTIAL' | 'PAID';
 export interface Invoice {
   id: string;
   patient_id: string;
+  episode_id?: string | null;
   invoice_number?: string | null;
   invoice_date: string;
   subtotal: number;
@@ -301,4 +339,61 @@ export interface DashboardStats {
   pending_invoices: number;
   today_admissions: number;
   today_discharges: number;
+}
+
+// ---------------------------------------------------------------------
+// Profile change requests (#18): doctor-only self-service editing,
+// every change requiring admin approval before it takes effect.
+// target_table/target_id is generic (currently only 'doctors' is
+// allowed at the DB level) so this can extend to other tables later
+// without a second parallel mechanism.
+export type ProfileChangeRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
+export interface ProfileChangeRequest {
+  id: string;
+  target_table: 'doctors';
+  target_id: string;
+  requested_by: string;
+  changes: Record<string, unknown>;
+  status: ProfileChangeRequestStatus;
+  review_notes?: string | null;
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
+  created_at: string;
+  requester?: { full_name: string; email: string };
+  target?: Doctor;
+}
+
+export interface Notification {
+  id: string;
+  user_id: string;
+  title: string;
+  body: string;
+  link?: string | null;
+  is_read: boolean;
+  created_at: string;
+}
+
+// ---------------------------------------------------------------------
+// Hygiene module (#19): log-and-report, not proactive alerting.
+export type CleaningZoneType = 'ward' | 'floor' | 'chamber' | 'other';
+
+export interface CleaningZone {
+  id: string;
+  name: string;
+  zone_type: CleaningZoneType;
+  ward_id?: string | null;
+  is_active: boolean;
+  created_at: string;
+  ward?: Ward;
+}
+
+export interface CleaningLog {
+  id: string;
+  zone_id: string;
+  cleaned_at: string;
+  logged_by: string;
+  notes?: string | null;
+  created_at: string;
+  logged_by_profile?: { full_name: string };
 }

@@ -227,3 +227,155 @@ export async function restockDispensedMedicines(invoiceId: string): Promise<stri
  *   alter table invoice_items
  *     add column if not exists dispensed boolean not null default false;
  */
+
+// ============================================================
+// Billing episodes -- one coherent encounter (an admission, an OPD
+// visit, or a standalone walk-in), one invoice. See migration
+// 035_billing_episodes.sql for why "find the patient's current invoice"
+// isn't a safe substitute for this.
+// ============================================================
+
+export type EpisodeContext =
+  | { episode_type: 'ADMISSION'; patient_id: string; admission_id: string }
+  | { episode_type: 'OPD_VISIT'; patient_id: string; appointment_id: string }
+  | { episode_type: 'WALK_IN'; patient_id: string };
+
+export interface EpisodeInvoiceResult {
+  episodeId: string;
+  invoiceId: string;
+}
+
+/**
+ * Finds the open episode for this admission/appointment/walk-in patient,
+ * or creates one (with an empty invoice) if none exists. Called
+ * identically from every charge-creating action -- appointment
+ * completion, admission creation, ward transfer/discharge billing, a
+ * prescribed-medicine purchase -- so they all converge on the same
+ * invoice for the same episode rather than each maintaining its own
+ * lookup logic.
+ *
+ * Handles the benign race where two near-simultaneous calls both attempt
+ * to create the same episode: the partial unique indexes in migration
+ * 035 are exactly what would fire in that case (Postgres error 23505,
+ * unique_violation). Rather than failing the whole charge over a race
+ * that isn't really an error, this catches that specific case and
+ * re-queries for the episode that won.
+ */
+export async function findOrCreateEpisodeInvoice(
+  context: EpisodeContext,
+  createdBy?: string
+): Promise<EpisodeInvoiceResult | { error: string }> {
+  const matchColumn =
+    context.episode_type === 'ADMISSION' ? 'admission_id' :
+    context.episode_type === 'OPD_VISIT' ? 'appointment_id' :
+    null;
+  const matchValue =
+    context.episode_type === 'ADMISSION' ? context.admission_id :
+    context.episode_type === 'OPD_VISIT' ? context.appointment_id :
+    null;
+
+  let query = supabase.from('billing_episodes').select('id, invoices(id)').eq('status', 'OPEN');
+  if (matchColumn && matchValue) {
+    query = query.eq(matchColumn, matchValue);
+  } else {
+    query = query.eq('patient_id', context.patient_id).eq('episode_type', 'WALK_IN');
+  }
+  const { data: existing, error: findError } = await query.maybeSingle();
+  if (findError) return { error: findError.message };
+  if (existing) {
+    const invoice = Array.isArray(existing.invoices) ? existing.invoices[0] : existing.invoices;
+    if (invoice) return { episodeId: existing.id, invoiceId: (invoice as { id: string }).id };
+    // Episode exists but somehow has no invoice yet (shouldn't normally
+    // happen -- created together below -- but don't assume): create one.
+    const { data: newInvoice, error: invErr } = await supabase.from('invoices').insert({
+      patient_id: context.patient_id, episode_id: existing.id, created_by: createdBy,
+    }).select('id').single();
+    if (invErr || !newInvoice) return { error: invErr?.message || 'Could not create invoice for existing episode.' };
+    return { episodeId: existing.id, invoiceId: newInvoice.id };
+  }
+
+  const { data: newEpisode, error: createError } = await supabase.from('billing_episodes').insert({
+    patient_id: context.patient_id,
+    episode_type: context.episode_type,
+    admission_id: context.episode_type === 'ADMISSION' ? context.admission_id : null,
+    appointment_id: context.episode_type === 'OPD_VISIT' ? context.appointment_id : null,
+    created_by: createdBy,
+  }).select('id').single();
+
+  if (createError) {
+    // 23505 = unique_violation. Another near-simultaneous call won the
+    // race and created the episode first -- that's not a failure, it's
+    // exactly the case the partial unique indexes exist to catch.
+    // Re-query for the episode that won instead of surfacing an error.
+    if (createError.code === '23505') {
+      return findOrCreateEpisodeInvoice(context, createdBy);
+    }
+    return { error: createError.message };
+  }
+  if (!newEpisode) return { error: 'Could not create billing episode.' };
+
+  const { data: newInvoice, error: invErr } = await supabase.from('invoices').insert({
+    patient_id: context.patient_id, episode_id: newEpisode.id, created_by: createdBy,
+  }).select('id').single();
+  if (invErr || !newInvoice) return { error: invErr?.message || 'Could not create invoice for new episode.' };
+
+  return { episodeId: newEpisode.id, invoiceId: newInvoice.id };
+}
+
+/**
+ * Deliberately simple: sets status = 'CLOSED', nothing else. It never
+ * touches invoice payment status -- the two lifecycles (can new charges
+ * still land here vs. how much has been paid) are genuinely independent
+ * by design, not just by accident.
+ */
+export async function closeEpisode(episodeId: string): Promise<string | null> {
+  const { error } = await supabase.from('billing_episodes')
+    .update({ status: 'CLOSED', closed_at: new Date().toISOString() })
+    .eq('id', episodeId);
+  return error ? error.message : null;
+}
+
+/**
+ * Computes and inserts the invoice line for a ward-history segment that
+ * has just been closed (by a transfer or a discharge -- the bed trigger,
+ * migration 036, closes the segment; this is the separate
+ * application-level charge computation that follows it). Marks the
+ * segment with the resulting invoice_item_id so it's never billed twice.
+ */
+export async function billClosedWardSegment(admissionId: string, episodeInvoiceId: string): Promise<string | null> {
+  const { data: segment, error: segErr } = await supabase
+    .from('admission_ward_history')
+    .select('id, daily_rate, started_at, ended_at, invoice_item_id, ward:wards(name, ward_type)')
+    .eq('admission_id', admissionId)
+    .not('ended_at', 'is', null)
+    .is('invoice_item_id', null)
+    .order('ended_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (segErr) return segErr.message;
+  if (!segment) return null; // nothing new to bill -- not an error
+
+  const started = new Date(segment.started_at).getTime();
+  const ended = new Date(segment.ended_at as string).getTime();
+  const days = Math.max(1, Math.ceil((ended - started) / (1000 * 60 * 60 * 24)));
+  const ward = Array.isArray(segment.ward) ? segment.ward[0] : segment.ward;
+
+  const { data: item, error: itemErr } = await supabase.from('invoice_items').insert({
+    invoice_id: episodeInvoiceId,
+    item_type: 'bed_charge',
+    description: `Room Charge - ${ward?.name || 'Ward'} (${ward?.ward_type || ''}) x ${days} day${days > 1 ? 's' : ''}`,
+    quantity: days,
+    unit_price: segment.daily_rate,
+    total_price: days * Number(segment.daily_rate),
+  }).select('id').single();
+
+  if (itemErr || !item) return itemErr?.message || 'Could not create ward-charge invoice item.';
+
+  const { error: updateErr } = await supabase.from('admission_ward_history')
+    .update({ invoice_item_id: item.id })
+    .eq('id', segment.id);
+  if (updateErr) return updateErr.message;
+
+  return null;
+}
