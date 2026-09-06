@@ -3,9 +3,22 @@ import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { useRole } from '@/hooks/useRole';
 import { Modal } from '@/components/ui/Modal';
-import { UserPlus, Users, Shield, CheckCircle2, AlertCircle } from 'lucide-react';
-import type { UserRole, Department } from '@/types';
+import { UserPlus, Users, Shield, CheckCircle2, AlertCircle, Stethoscope, ClipboardCheck } from 'lucide-react';
+import type { UserRole, Department, Doctor, ProfileChangeRequest } from '@/types';
 import { DAYS_OF_WEEK, normalizeSpecialization } from '@/lib/utils';
+
+// The 8 fields a doctor can self-request a change to -- mirrors the
+// DB-level allow-list in migration 037's validate_profile_change_request
+// trigger exactly. `role` (and everything else) is deliberately absent;
+// this list existing in two places (here and the DB trigger) is fine --
+// the DB trigger is the actual enforcement, this is just what the form
+// offers, and a mismatch here would only ever be "form offers less than
+// the DB allows", never a security gap.
+const SELF_EDITABLE_FIELDS = [
+  'phone', 'specialization', 'experience_years', 'consultation_fee',
+  'available_days', 'available_time_start', 'available_time_end', 'is_active',
+] as const;
+type SelfEditableField = typeof SELF_EDITABLE_FIELDS[number];
 
 const initialForm = {
   email: '',
@@ -30,7 +43,7 @@ const initialForm = {
 
 export function SettingsPage() {
   const { user } = useAuth();
-  const { isAdmin } = useRole();
+  const { isAdmin, isDoctor } = useRole();
   const [showUserModal, setShowUserModal] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -38,11 +51,138 @@ export function SettingsPage() {
   const [userForm, setUserForm] = useState(initialForm);
   const [departments, setDepartments] = useState<Department[]>([]);
 
+  // ---- Doctor self-edit (#18) ----
+  const [myDoctorRecord, setMyDoctorRecord] = useState<Doctor | null>(null);
+  const [selfEditForm, setSelfEditForm] = useState<Record<SelfEditableField, string | string[] | boolean>>({
+    phone: '', specialization: '', experience_years: '', consultation_fee: '',
+    available_days: [], available_time_start: '', available_time_end: '', is_active: true,
+  });
+  const [myRequests, setMyRequests] = useState<ProfileChangeRequest[]>([]);
+  const [selfEditMessage, setSelfEditMessage] = useState('');
+  const [selfEditError, setSelfEditError] = useState('');
+  const [submittingRequest, setSubmittingRequest] = useState(false);
+
+  // ---- Admin review queue (#18) ----
+  const [pendingRequests, setPendingRequests] = useState<ProfileChangeRequest[]>([]);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+  const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
+  const [reviewError, setReviewError] = useState('');
+
   useEffect(() => {
     if (isAdmin()) {
       supabase.from('departments').select('*').order('name').then(({ data }) => setDepartments(data || []));
     }
   }, []);
+
+  useEffect(() => {
+    if (isDoctor() && user?.id) fetchMyDoctorRecord();
+    if (isAdmin()) fetchPendingRequests();
+  }, [user?.id]);
+
+  async function fetchMyDoctorRecord() {
+    const { data } = await supabase.from('doctors').select('*').eq('user_id', user!.id).maybeSingle();
+    if (data) {
+      setMyDoctorRecord(data as unknown as Doctor);
+      setSelfEditForm({
+        phone: data.phone || '',
+        specialization: data.specialization || '',
+        experience_years: String(data.experience_years ?? ''),
+        consultation_fee: String(data.consultation_fee ?? ''),
+        available_days: data.available_days || [],
+        available_time_start: data.available_time_start || '',
+        available_time_end: data.available_time_end || '',
+        is_active: data.is_active ?? true,
+      });
+    }
+    const { data: reqs } = await supabase.from('profile_change_requests')
+      .select('*').eq('requested_by', user!.id).order('created_at', { ascending: false });
+    setMyRequests((reqs || []) as unknown as ProfileChangeRequest[]);
+  }
+
+  async function fetchPendingRequests() {
+    const { data } = await supabase.from('profile_change_requests')
+      .select('*, requester:profiles!profile_change_requests_requested_by_fkey(full_name, email)')
+      .eq('status', 'PENDING').order('created_at', { ascending: true });
+    setPendingRequests((data || []) as unknown as ProfileChangeRequest[]);
+  }
+
+  function toggleSelfEditDay(day: string) {
+    setSelfEditForm(f => {
+      const days = f.available_days as string[];
+      return { ...f, available_days: days.includes(day) ? days.filter(d => d !== day) : [...days, day] };
+    });
+  }
+
+  /**
+   * Submits a DIFFED payload -- only fields that actually changed from
+   * the doctor's current record -- so an admin reviewing a request sees
+   * exactly what's being asked for rather than a full snapshot to
+   * compare by eye.
+   */
+  async function handleSubmitSelfEdit(e: React.FormEvent) {
+    e.preventDefault();
+    setSelfEditMessage('');
+    setSelfEditError('');
+    if (!myDoctorRecord) return;
+
+    const changes: Record<string, unknown> = {};
+    for (const field of SELF_EDITABLE_FIELDS) {
+      const newVal = selfEditForm[field];
+      const oldVal = field === 'experience_years' || field === 'consultation_fee'
+        ? String((myDoctorRecord as unknown as Record<string, unknown>)[field] ?? '')
+        : (myDoctorRecord as unknown as Record<string, unknown>)[field];
+      const normalizedNew = field === 'experience_years' ? Number(newVal) :
+        field === 'consultation_fee' ? Number(newVal) : newVal;
+      const normalizedOld = field === 'available_days' ? (oldVal || []) : oldVal;
+      if (JSON.stringify(normalizedNew) !== JSON.stringify(normalizedOld)) {
+        changes[field] = normalizedNew;
+      }
+    }
+
+    if (Object.keys(changes).length === 0) {
+      setSelfEditError('No changes to submit.');
+      return;
+    }
+
+    setSubmittingRequest(true);
+    const { error: insertError } = await supabase.from('profile_change_requests').insert({
+      target_table: 'doctors',
+      target_id: myDoctorRecord.id,
+      requested_by: user!.id,
+      changes: changes as never,
+    });
+    setSubmittingRequest(false);
+
+    if (insertError) {
+      setSelfEditError(insertError.message);
+      return;
+    }
+    setSelfEditMessage('Change request submitted. An admin will review it.');
+    fetchMyDoctorRecord();
+  }
+
+  async function handleReview(requestId: string, approve: boolean) {
+    setReviewError('');
+    setReviewingId(requestId);
+    const notes = reviewNotes[requestId] || undefined;
+    const { error: rpcError } = await supabase.rpc(
+      approve ? 'approve_profile_change_request' : 'reject_profile_change_request',
+      { request_id: requestId, notes }
+    );
+    setReviewingId(null);
+    if (rpcError) {
+      setReviewError(rpcError.message);
+      return;
+    }
+    fetchPendingRequests();
+  }
+
+  function formatChangeValue(key: string, value: unknown): string {
+    if (Array.isArray(value)) return value.join(', ');
+    if (typeof value === 'boolean') return value ? 'Active' : 'Inactive';
+    if (key === 'consultation_fee') return `₹${value}`;
+    return String(value);
+  }
 
   async function handleCreateUser(e: React.FormEvent) {
     e.preventDefault();
@@ -88,7 +228,7 @@ export function SettingsPage() {
           specialization: normalizeSpecialization(userForm.specialization),
           qualification: userForm.qualification.trim(),
           registration_no: userForm.registration_no.trim(),
-          consultation_fee: parseFloat(userForm.consultation_fee),
+          consultation_fee: parseFloat(userForm.consultation_fee) || 0,
           experience_years: parseInt(userForm.experience_years) || 0,
           available_days: userForm.available_days,
           available_time_start: userForm.available_time_start,
@@ -186,6 +326,138 @@ export function SettingsPage() {
           </div>
         </div>
       </div>
+
+      {isDoctor() && myDoctorRecord && (
+        <div className="card">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-100">
+              <Stethoscope className="h-5 w-5 text-blue-600" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">Request Profile Changes</h2>
+              <p className="text-sm text-gray-500">Changes require admin approval before they take effect</p>
+            </div>
+          </div>
+
+          {selfEditMessage && (
+            <div className="mb-4 flex items-start gap-2 rounded-lg bg-green-50 p-3 text-sm text-green-700">
+              <CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0" /><span>{selfEditMessage}</span>
+            </div>
+          )}
+          {selfEditError && (
+            <div className="mb-4 flex items-start gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+              <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" /><span>{selfEditError}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleSubmitSelfEdit} className="space-y-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label className="label">Phone</label>
+                <input pattern="[0-9]{10}" value={selfEditForm.phone as string} onChange={e => setSelfEditForm({ ...selfEditForm, phone: e.target.value })} className="input" />
+              </div>
+              <div>
+                <label className="label">Specialization</label>
+                <input value={selfEditForm.specialization as string} onChange={e => setSelfEditForm({ ...selfEditForm, specialization: e.target.value })} className="input" />
+              </div>
+              <div>
+                <label className="label">Experience (years)</label>
+                <input type="number" min="0" value={selfEditForm.experience_years as string} onChange={e => setSelfEditForm({ ...selfEditForm, experience_years: e.target.value })} className="input" />
+              </div>
+              <div>
+                <label className="label">Consultation Fee (₹)</label>
+                <input type="number" min="0" step="0.01" value={selfEditForm.consultation_fee as string} onChange={e => setSelfEditForm({ ...selfEditForm, consultation_fee: e.target.value })} className="input" />
+              </div>
+              <div>
+                <label className="label">Available From</label>
+                <input type="time" value={selfEditForm.available_time_start as string} onChange={e => setSelfEditForm({ ...selfEditForm, available_time_start: e.target.value })} className="input" />
+              </div>
+              <div>
+                <label className="label">Available To</label>
+                <input type="time" value={selfEditForm.available_time_end as string} onChange={e => setSelfEditForm({ ...selfEditForm, available_time_end: e.target.value })} className="input" />
+              </div>
+            </div>
+            <div>
+              <label className="label">Available Days</label>
+              <div className="flex flex-wrap gap-2">
+                {DAYS_OF_WEEK.map(day => (
+                  <button type="button" key={day} onClick={() => toggleSelfEditDay(day)}
+                    className={`rounded-full px-3 py-1 text-xs font-medium ${(selfEditForm.available_days as string[]).includes(day) ? 'bg-primary-600 text-white' : 'bg-white text-gray-600 border border-gray-300'}`}>
+                    {day.slice(0, 3)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              <input type="checkbox" checked={selfEditForm.is_active as boolean} onChange={e => setSelfEditForm({ ...selfEditForm, is_active: e.target.checked })} />
+              Active (visible for booking)
+            </label>
+            <div className="flex justify-end">
+              <button type="submit" disabled={submittingRequest} className="btn-primary">
+                {submittingRequest ? 'Submitting...' : 'Submit Change Request'}
+              </button>
+            </div>
+          </form>
+
+          {myRequests.length > 0 && (
+            <div className="mt-6 border-t border-gray-100 pt-4">
+              <p className="mb-2 text-sm font-medium text-gray-700">Your requests</p>
+              <div className="space-y-2">
+                {myRequests.map(r => (
+                  <div key={r.id} className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-xs">
+                    <div>
+                      <span className={`badge ${r.status === 'APPROVED' ? 'bg-green-50 text-green-700' : r.status === 'REJECTED' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700'}`}>{r.status}</span>
+                      <span className="ml-2 text-gray-600">{Object.keys(r.changes).map(k => `${k}: ${formatChangeValue(k, r.changes[k])}`).join(', ')}</span>
+                    </div>
+                    <span className="text-gray-400">{new Date(r.created_at).toLocaleDateString()}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {isAdmin() && pendingRequests.length > 0 && (
+        <div className="card">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-100">
+              <ClipboardCheck className="h-5 w-5 text-amber-600" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">Pending Profile Change Requests</h2>
+              <p className="text-sm text-gray-500">Review and approve or reject doctor-submitted changes</p>
+            </div>
+          </div>
+          {reviewError && (
+            <div className="mb-4 flex items-start gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+              <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" /><span>{reviewError}</span>
+            </div>
+          )}
+          <div className="space-y-3">
+            {pendingRequests.map(r => (
+              <div key={r.id} className="rounded-lg border border-gray-200 p-3">
+                <p className="text-sm font-medium text-gray-900">{r.requester?.full_name || 'Unknown'} <span className="font-normal text-gray-500">({r.requester?.email})</span></p>
+                <ul className="mt-1 text-xs text-gray-600">
+                  {Object.keys(r.changes).map(k => (
+                    <li key={k}>{k.replace(/_/g, ' ')}: <span className="font-medium">{formatChangeValue(k, r.changes[k])}</span></li>
+                  ))}
+                </ul>
+                <input
+                  placeholder="Optional review notes"
+                  value={reviewNotes[r.id] || ''}
+                  onChange={e => setReviewNotes({ ...reviewNotes, [r.id]: e.target.value })}
+                  className="input mt-2 py-1 text-xs"
+                />
+                <div className="mt-2 flex justify-end gap-2">
+                  <button disabled={reviewingId === r.id} onClick={() => handleReview(r.id, false)} className="btn-secondary py-1 px-3 text-xs">Reject</button>
+                  <button disabled={reviewingId === r.id} onClick={() => handleReview(r.id, true)} className="btn-primary py-1 px-3 text-xs">Approve</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="card">
         <h2 className="text-lg font-semibold text-gray-900 mb-4">System Information</h2>
@@ -309,7 +581,7 @@ export function SettingsPage() {
                 </div>
                 <div>
                   <label className="label">Experience (Years)</label>
-                  <input type="number" min="0" value={userForm.experience_years} onChange={e => setUserForm({ ...userForm, experience_years: e.target.value })} className="input" />
+                  <input type="number" value={userForm.experience_years} onChange={e => setUserForm({ ...userForm, experience_years: e.target.value })} className="input" />
                 </div>
                 <div>
                   <label className="label">Available From *</label>

@@ -19,6 +19,7 @@ import { InvoiceDetailPage } from '@/pages/billing/InvoiceDetailPage';
 import { IPDPage } from '@/pages/ipd/IPDPage';
 import { AdmissionsPage } from '@/pages/ipd/AdmissionsPage';
 import { SettingsPage } from '@/pages/SettingsPage';
+import { HygienePage } from '@/pages/hygiene/HygienePage';
 import type { UserRole } from '@/types';
 import './index.css';
 
@@ -65,8 +66,13 @@ function AppRoutes() {
         <Route path="billing/:id" element={<InvoiceDetailPage />} />
         <Route path="ipd" element={<IPDPage />} />
         <Route path="ipd/admissions" element={<AdmissionsPage />} />
+        <Route path="hygiene" element={
+          <RoleRoute roles={['admin', 'receptionist']}>
+            <HygienePage />
+          </RoleRoute>
+        } />
         <Route path="settings" element={
-          <RoleRoute roles={['admin']}>
+          <RoleRoute roles={['admin', 'doctor']}>
             <SettingsPage />
           </RoleRoute>
         } />

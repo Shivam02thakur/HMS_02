@@ -5,8 +5,9 @@ import { useRole } from '@/hooks/useRole';
 import {
   LayoutDashboard, Users, Stethoscope, CalendarDays, FileText,
   Pill, FlaskConical, Receipt, BedDouble, Settings, LogOut,
-  Menu, X, ChevronDown, ChevronRight, UserCircle, Building2
+  Menu, X, ChevronDown, ChevronRight, UserCircle, Building2, Sparkles
 } from 'lucide-react';
+import { NotificationBell } from '@/components/layout/NotificationBell.tsx';
 
 const navItems = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin', 'receptionist', 'doctor', 'pharmacist', 'lab_technician'] },
@@ -19,7 +20,8 @@ const navItems = [
   { path: '/laboratory', label: 'Laboratory', icon: FlaskConical, roles: ['admin', 'doctor', 'lab_technician'] },
   { path: '/billing', label: 'Billing', icon: Receipt, roles: ['admin', 'receptionist'] },
   { path: '/ipd', label: 'IPD / Wards', icon: BedDouble, roles: ['admin', 'receptionist', 'doctor'] },
-  { path: '/settings', label: 'Settings', icon: Settings, roles: ['admin'] },
+  { path: '/hygiene', label: 'Hygiene', icon: Sparkles, roles: ['admin', 'receptionist'] },
+  { path: '/settings', label: 'Settings', icon: Settings, roles: ['admin', 'doctor'] },
 ];
 
 export function Layout() {
@@ -103,6 +105,7 @@ export function Layout() {
             <span className="text-sm font-medium text-gray-700 tabular-nums hidden sm:block">
               {now.toLocaleTimeString('en-IN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
             </span>
+            <NotificationBell />
           </div>
         </header>
 
