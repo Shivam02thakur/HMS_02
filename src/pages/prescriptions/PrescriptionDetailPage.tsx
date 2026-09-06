@@ -53,7 +53,7 @@ export function PrescriptionDetailPage() {
     }
 
     const lineageIds = [data.revision_of, data.superseded_by].filter(Boolean) as string[];
-    let lineageById = new Map<string, { id: string; prescription_number: string | null; created_at: string | null }>();
+    let lineageById = new Map<string, { id: string; prescription_number: string; created_at: string | null }>();
     if (lineageIds.length > 0) {
       const { data: lineageRows, error: lineageError } = await supabase
         .from('prescriptions')
@@ -110,7 +110,7 @@ export function PrescriptionDetailPage() {
             <button type="button" onClick={() => navigate(`/prescriptions/${superseded_by_prescription.id}`)} className="font-semibold underline print:no-underline">
               {superseded_by_prescription.prescription_number}
             </button>{' '}
-            ({superseded_by_prescription.created_at ? formatDate(superseded_by_prescription.created_at) : 'date unknown'}) and is no longer valid or purchasable.
+            ({superseded_by_prescription.created_at ? formatDate(superseded_by_prescription.created_at) : '—'}) and is no longer valid or purchasable.
           </span>
         </div>
       )}
@@ -125,7 +125,7 @@ export function PrescriptionDetailPage() {
             <button type="button" onClick={() => navigate(`/prescriptions/${revision_of_prescription.id}`)} className="font-semibold underline">
               {revision_of_prescription.prescription_number}
             </button>{' '}
-            ({revision_of_prescription.created_at ? formatDate(revision_of_prescription.created_at) : 'date unknown'}).
+            ({revision_of_prescription.created_at ? formatDate(revision_of_prescription.created_at) : '—'}).
           </span>
         </div>
       )}
