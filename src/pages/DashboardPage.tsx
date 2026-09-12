@@ -24,11 +24,39 @@ export function DashboardPage() {
     fetchDashboardData();
   }, []);
 
+  // Local calendar day, NOT UTC -- see migration 039 for why. Passed to
+  // get_dashboard_stats() so its "today" figures (revenue, admissions,
+  // discharges, appointments) agree with the Billing page's Revenue
+  // Collected card, which already buckets "today" by local date.
+  //
+  // Returns both the absolute instant bounds (correct to send as-is --
+  // local midnight IS a specific UTC instant, `toISOString()` on it is
+  // fine) AND a separate local Y-M-D string for comparing against plain
+  // DATE columns like appointments.appointment_date. Deriving that
+  // string via `start.toISOString().slice(0, 10)` would reintroduce the
+  // same bug: for any timezone ahead of UTC, local midnight's ISO string
+  // falls on the *previous* UTC calendar day.
+  function localDayBounds() {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth();
+    const d = now.getDate();
+    const start = new Date(y, m, d);
+    const end = new Date(y, m, d + 1);
+    const dateStr = `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    return { start: start.toISOString(), end: end.toISOString(), dateStr };
+  }
+
   async function fetchDashboardData() {
     setError(null);
     try {
       // Stats
-      const { data: statsData, error: statsError } = await supabase.rpc('get_dashboard_stats');
+      const { start, end, dateStr } = localDayBounds();
+      const { data: statsData, error: statsError } = await supabase.rpc('get_dashboard_stats', {
+        p_today_start: start,
+        p_today_end: end,
+        p_today_date: dateStr,
+      });
       if (statsError) throw statsError;
       // PostgREST can return this as either a raw object or an array
       // containing one row, depending on how the function is declared.
@@ -36,8 +64,11 @@ export function DashboardPage() {
       const rawStats = Array.isArray(statsData) ? statsData[0] : statsData;
       setStats((rawStats ?? null) as unknown as DashboardStats | null);
 
-      // Today's appointments
-      const today = new Date().toISOString().split('T')[0];
+      // Today's appointments -- local calendar date, matching the stats
+      // call above (this used to be `.toISOString().split('T')[0]`,
+      // which is UTC and could show yesterday's/tomorrow's list for part
+      // of the day depending on the user's timezone).
+      const today = dateStr;
       const { data: appts, error: apptsError } = await supabase
         .from('appointments')
         .select('*, patient:patients(*), doctor:doctors(*)')

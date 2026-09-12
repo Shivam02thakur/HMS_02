@@ -56,6 +56,12 @@ export function BillingPage() {
   const [form, setForm] = useState({ patient_id: '', notes: '' });
   const [paymentForm, setPaymentForm] = useState({ amount: '', payment_mode: 'Cash', transaction_id: '', notes: '' });
   const [paymentError, setPaymentError] = useState<string | null>(null);
+  // Guards against a double-click (or a slow network + impatient click)
+  // firing two payment inserts for one intended settlement. The database
+  // (migration 038) is the real backstop, but this avoids the wasted
+  // round-trip and the confusing "REJECTED" error a second click would
+  // otherwise surface.
+  const [paymentSubmitting, setPaymentSubmitting] = useState(false);
 
   const hasActiveFilters = statusFilter !== 'ALL' || !!dateFrom || !!dateTo || !!search;
 
@@ -236,14 +242,24 @@ export function BillingPage() {
         `For a partial payment, open the invoice and use "Record Payment" there instead.`
       );
       return;
+    }
 
+    // NOTE: this used to be nested *inside* the block above (a brace
+    // bug), which made it unreachable dead code -- the check above
+    // always returns first, so this line never ran for any amount.
+    // That meant "Settle Invoice" had no overpayment protection at all.
+    // The database now also rejects this (see migration 038) as a
+    // second line of defense, but keep this check here too so the
+    // error message stays specific and instant.
     if (amount > remainingBalance + 0.01) {
       setPaymentError(
         `OVERPAYMENT: Payment of ${formatCurrency(amount)} exceeds the remaining balance of ${formatCurrency(remainingBalance)}.`
       );
       return;
     }
-    }
+
+    if (paymentSubmitting) return;
+    setPaymentSubmitting(true);
 
     const { error } = await supabase.from('payments').insert({
       invoice_id: selectedInvoice.id,
@@ -257,6 +273,7 @@ export function BillingPage() {
     if (error) {
       console.error('Failed to record payment:', error);
       setPaymentError(error.message);
+      setPaymentSubmitting(false);
       return;
     }
 
@@ -279,10 +296,12 @@ export function BillingPage() {
     } catch (recalcErr: any) {
       console.error('Payment recorded, but failed to update invoice totals:', recalcErr);
       setPaymentError(`Payment recorded, but the invoice totals couldn't be updated: ${recalcErr.message || recalcErr}`);
+      setPaymentSubmitting(false);
       fetchData();
       return;
     }
 
+    setPaymentSubmitting(false);
     setShowPaymentModal(false);
     setSelectedInvoice(null);
     setPaymentForm({ amount: '', payment_mode: 'Cash', transaction_id: '', notes: '' });
@@ -527,7 +546,9 @@ export function BillingPage() {
           )}
           <div className="flex justify-end gap-3">
             <button type="button" onClick={() => { setShowPaymentModal(false); setSelectedInvoice(null); setPaymentError(null); }} className="btn-secondary">Cancel</button>
-            <button type="submit" className="btn-primary">Record Payment</button>
+            <button type="submit" disabled={paymentSubmitting} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
+              {paymentSubmitting ? 'Recording...' : 'Record Payment'}
+            </button>
           </div>
         </form>
       </Modal>

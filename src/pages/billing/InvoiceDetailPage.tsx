@@ -60,7 +60,25 @@ export function InvoiceDetailPage() {
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [wards, setWards] = useState<Ward[]>([]);
 
-  const todayIso = () => new Date().toISOString().slice(0, 10);
+  // Local calendar date, NOT UTC. This used to be
+  // `new Date().toISOString().slice(0, 10)`, which converts to UTC
+  // first -- for any timezone ahead of UTC (e.g. IST, UTC+5:30), that
+  // silently returns YESTERDAY's date for the first ~5.5 hours after
+  // local midnight, every single day. A payment recorded through this
+  // form during that window got stamped with yesterday's date, which
+  // then didn't match the Revenue Collected card's *local*-date "today"
+  // bucket on the Billing page (dateKey() there already used local
+  // getters) -- so it silently missed today's revenue total while still
+  // being correctly included in year-to-date. Recording it directly
+  // through "Settle" on the Billing list never hit this, because that
+  // flow has no date field and lets the database stamp paid_at itself.
+  const todayIso = () => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
   const [paymentForm, setPaymentForm] = useState({ amount: '', payment_mode: 'Cash', transaction_id: '', notes: '', payment_date: todayIso() });
   const [paymentError, setPaymentError] = useState<string | null>(null);
   // Per-payment "Cancel" action (voids a single recorded payment)
@@ -72,6 +90,12 @@ export function InvoiceDetailPage() {
   const [waiverForm, setWaiverForm] = useState({ amount: '', reason: '' });
   const [waiverError, setWaiverError] = useState<string | null>(null);
   const [waiverSubmitting, setWaiverSubmitting] = useState(false);
+  // Same double-submit guard as the waiver form below -- "Record Payment"
+  // was missing one, which is exactly what let a double-click (or a slow
+  // request + impatient re-click) insert two payment rows for one
+  // intended payment. The DB-level guard in migration 038 is the real
+  // backstop; this avoids the wasted round-trip / confusing error.
+  const [paymentSubmitting, setPaymentSubmitting] = useState(false);
 
   useEffect(() => { if (id) fetchData(); }, [id]);
 
@@ -116,6 +140,9 @@ export function InvoiceDetailPage() {
       return;
     }
 
+    if (paymentSubmitting) return;
+    setPaymentSubmitting(true);
+
     const { error } = await supabase.from('payments').insert({
       invoice_id: id,
       amount,
@@ -129,6 +156,7 @@ export function InvoiceDetailPage() {
     if (error) {
       console.error('Failed to record payment:', error);
       setPaymentError(error.message);
+      setPaymentSubmitting(false);
       return;
     }
 
@@ -158,6 +186,7 @@ export function InvoiceDetailPage() {
       setPaymentError(`Payment recorded, but the invoice totals couldn't be updated: ${recalcErr.message || recalcErr}`);
     }
 
+    setPaymentSubmitting(false);
     setShowPaymentModal(false);
     setPaymentForm({ amount: '', payment_mode: 'Cash', transaction_id: '', notes: '', payment_date: todayIso() });
     fetchData();
@@ -610,7 +639,9 @@ export function InvoiceDetailPage() {
           )}
           <div className="flex justify-end gap-3">
             <button type="button" onClick={() => { setShowPaymentModal(false); setPaymentError(null); }} className="btn-secondary">Cancel</button>
-            <button type="submit" className="btn-primary">Record</button>
+            <button type="submit" disabled={paymentSubmitting} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">
+              {paymentSubmitting ? 'Recording...' : 'Record'}
+            </button>
           </div>
         </form>
       </Modal>
