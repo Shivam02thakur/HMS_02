@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRole } from '@/hooks/useRole';
@@ -10,11 +10,14 @@ import { StatCard } from '@/components/ui/StatCard';
 import type { Invoice, Patient, InvoiceStatus } from '@/types';
 import {
   Plus, User, IndianRupee, Wallet, Receipt, AlertCircle,
-  Download, X, ChevronLeft, ChevronRight, SlidersHorizontal, CheckCircle, History
+  Download, X, ChevronLeft, ChevronRight, SlidersHorizontal, CheckCircle, History, Trash2
 } from 'lucide-react';
 import { formatDate, formatCurrency, formatNumber, getStatusColor, getStatusLabel } from '@/lib/utils';
 import { useDebounce } from '@/hooks/useDebounce';
-import { recalcInvoicePaymentState, dispenseUndispensedMedicines } from '@/lib/billing';
+import {
+  recalcInvoicePaymentState, dispenseUndispensedMedicines,
+  newRequestId, isDuplicatePaymentError, deleteUnpaidInvoice,
+} from '@/lib/billing';
 
 const PAGE_SIZE = 10;
 const STATUS_OPTIONS: { value: InvoiceStatus | 'ALL'; label: string }[] = [
@@ -58,10 +61,20 @@ export function BillingPage() {
   const [paymentError, setPaymentError] = useState<string | null>(null);
   // Guards against a double-click (or a slow network + impatient click)
   // firing two payment inserts for one intended settlement. The database
-  // (migration 038) is the real backstop, but this avoids the wasted
+  // (migration 039) is the real backstop, but this avoids the wasted
   // round-trip and the confusing "REJECTED" error a second click would
   // otherwise surface.
   const [paymentSubmitting, setPaymentSubmitting] = useState(false);
+  // The state flag above only updates on the *next render*, so two submits
+  // fired before React re-renders (double-click, Enter held down, a slow
+  // device) both still see `false` and both insert. This ref flips
+  // synchronously, so the second submit is dropped immediately.
+  const paymentInFlight = useRef(false);
+  // One id per payment attempt, kept until that attempt succeeds. The DB
+  // rejects a repeat of the same id (migration 040), which also covers a
+  // retry after a lost response, where the first insert really did commit.
+  const paymentRequest = useRef<{ invoiceId: string; id: string } | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const hasActiveFilters = statusFilter !== 'ALL' || !!dateFrom || !!dateTo || !!search;
 
@@ -248,7 +261,7 @@ export function BillingPage() {
     // bug), which made it unreachable dead code -- the check above
     // always returns first, so this line never ran for any amount.
     // That meant "Settle Invoice" had no overpayment protection at all.
-    // The database now also rejects this (see migration 038) as a
+    // The database now also rejects this (see migration 039) as a
     // second line of defense, but keep this check here too so the
     // error message stays specific and instant.
     if (amount > remainingBalance + 0.01) {
@@ -258,8 +271,14 @@ export function BillingPage() {
       return;
     }
 
-    if (paymentSubmitting) return;
+    if (paymentInFlight.current) return;
+    paymentInFlight.current = true;
     setPaymentSubmitting(true);
+    const release = () => { paymentInFlight.current = false; setPaymentSubmitting(false); };
+
+    if (!paymentRequest.current || paymentRequest.current.invoiceId !== selectedInvoice.id) {
+      paymentRequest.current = { invoiceId: selectedInvoice.id, id: newRequestId() };
+    }
 
     const { error } = await supabase.from('payments').insert({
       invoice_id: selectedInvoice.id,
@@ -267,15 +286,20 @@ export function BillingPage() {
       payment_mode: paymentForm.payment_mode as any,
       transaction_id: paymentForm.transaction_id || undefined,
       notes: paymentForm.notes,
-      received_by: user?.id
+      received_by: user?.id,
+      client_request_id: paymentRequest.current.id,
     });
 
-    if (error) {
+    // A duplicate means this very attempt already went through (earlier
+    // click, or a lost response) -- the payment exists, so carry on to
+    // the recalculation instead of reporting a failure.
+    if (error && !isDuplicatePaymentError(error)) {
       console.error('Failed to record payment:', error);
       setPaymentError(error.message);
-      setPaymentSubmitting(false);
+      release();
       return;
     }
+    paymentRequest.current = null;
 
     const wasPaid = selectedInvoice.status === 'PAID';
 
@@ -296,17 +320,36 @@ export function BillingPage() {
     } catch (recalcErr: any) {
       console.error('Payment recorded, but failed to update invoice totals:', recalcErr);
       setPaymentError(`Payment recorded, but the invoice totals couldn't be updated: ${recalcErr.message || recalcErr}`);
-      setPaymentSubmitting(false);
+      release();
       fetchData();
       return;
     }
 
-    setPaymentSubmitting(false);
+    release();
     setShowPaymentModal(false);
     setSelectedInvoice(null);
     setPaymentForm({ amount: '', payment_mode: 'Cash', transaction_id: '', notes: '' });
     fetchData();
     fetchRevenueData();
+  }
+
+  // Only invoices with no money on them can be removed (the database
+  // enforces this too). Cancel a payment on the invoice page first if
+  // you need to remove one that has been paid.
+  async function handleDeleteInvoice(inv: Invoice) {
+    const itemsNote = Number(inv.total_amount) > 0
+      ? `It contains items totalling ${formatCurrency(inv.total_amount)}, which will be removed with it.`
+      : 'It has no items.';
+    if (!window.confirm(`Delete invoice ${inv.invoice_number} for ${inv.patient?.full_name || 'this patient'}?\n\n${itemsNote}\nThis cannot be undone.`)) return;
+
+    setActionError(null);
+    try {
+      await deleteUnpaidInvoice(inv.id);
+    } catch (err: any) {
+      setActionError(err.message || 'Could not delete the invoice.');
+      return;
+    }
+    fetchData();
   }
 
   return (
@@ -360,6 +403,13 @@ export function BillingPage() {
         <StatCard title="Outstanding" value={formatCurrency(summary.outstanding)} icon={IndianRupee} color="red" />
         <StatCard title="Pending / Partial" value={formatNumber(summary.pendingCount)} icon={AlertCircle} color="yellow" />
       </div>
+
+      {actionError && (
+        <div className="flex items-center justify-between gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+          <span className="flex items-center gap-2"><AlertCircle className="h-4 w-4 flex-shrink-0" />{actionError}</span>
+          <button onClick={() => setActionError(null)} className="text-red-400 hover:text-red-600"><X className="h-4 w-4" /></button>
+        </div>
+      )}
 
       <div className="card">
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -442,15 +492,29 @@ export function BillingPage() {
                           )}
                         </td>
                         <td className="table-cell text-right">
-                          {inv.status !== 'PAID' && isReceptionist() ? (
-                            <button onClick={(e) => { e.stopPropagation(); setSelectedInvoice(inv); setPaymentForm({...paymentForm, amount: (inv.total_amount - inv.paid_amount - Number(inv.waived_amount || 0)).toString()}); setShowPaymentModal(true); }} className="text-xs bg-medical-50 text-medical-700 px-2.5 py-1.5 rounded-md font-medium hover:bg-medical-100">
-                              Settle
-                            </button>
-                          ) : inv.status === 'PAID' ? (
-                            <span className="inline-flex items-center gap-1 text-xs text-gray-400">
-                              <CheckCircle className="h-3.5 w-3.5" /> Settled
-                            </span>
-                          ) : null}
+                          <div className="flex items-center justify-end gap-2">
+                            {inv.status === 'PAID' ? (
+                              <span className="inline-flex items-center gap-1 text-xs text-gray-400">
+                                <CheckCircle className="h-3.5 w-3.5" /> Settled
+                              </span>
+                            ) : balance > 0.01 && isReceptionist() ? (
+                              <button onClick={(e) => { e.stopPropagation(); setSelectedInvoice(inv); setPaymentForm({...paymentForm, amount: balance.toFixed(2)}); setShowPaymentModal(true); }} className="text-xs bg-medical-50 text-medical-700 px-2.5 py-1.5 rounded-md font-medium hover:bg-medical-100">
+                                Settle
+                              </button>
+                            ) : inv.status === 'PENDING' && Number(inv.total_amount) === 0 ? (
+                              <span className="text-xs text-gray-400">No items</span>
+                            ) : null}
+                            {isReceptionist() && Number(inv.paid_amount || 0) === 0 && Number(inv.waived_amount || 0) === 0 && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleDeleteInvoice(inv); }}
+                                title="Delete invoice"
+                                aria-label={`Delete invoice ${inv.invoice_number}`}
+                                className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );

@@ -33,8 +33,13 @@ export async function recalcInvoicePaymentState(invoiceId: string, totalAmount: 
   const waivedAmount = (adjs || []).reduce((sum, a) => sum + Number(a.amount || 0), 0);
   const settledAmount = paidAmount + waivedAmount;
 
+  // PAID requires something to have been owed: with totalAmount = 0 (an
+  // invoice with no items) `settled >= total - 0.01` is `0 >= -0.01`,
+  // which is true, so an empty invoice used to flip to PAID and lock
+  // itself the moment its last item was removed. Must stay identical to
+  // reconcile_invoice_totals() in migration 040.
   const status: InvoiceStatus =
-    settledAmount >= totalAmount - 0.01
+    totalAmount > 0 && settledAmount >= totalAmount - 0.01
       ? 'PAID'
       : settledAmount > 0
       ? 'PARTIAL'
@@ -47,6 +52,45 @@ export async function recalcInvoicePaymentState(invoiceId: string, totalAmount: 
   if (updateError) throw updateError;
 
   return { paidAmount, waivedAmount, status };
+}
+
+/**
+ * A fresh id for ONE payment attempt. Sent as payments.client_request_id;
+ * the database rejects a second insert carrying the same id for the same
+ * invoice (migration 040), so a double-click, a second tab, or a retry
+ * after a lost response can never record the same payment twice.
+ *
+ * crypto.randomUUID() only exists in secure contexts (https / localhost);
+ * a hospital intranet served over plain http would throw on it and break
+ * payments entirely, hence the fallbacks.
+ */
+export function newRequestId(): string {
+  const c = typeof crypto !== 'undefined' ? crypto : undefined;
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+  const b = new Uint8Array(16);
+  if (c && typeof c.getRandomValues === 'function') c.getRandomValues(b);
+  else for (let i = 0; i < 16; i++) b[i] = Math.floor(Math.random() * 256);
+  b[6] = (b[6] & 0x0f) | 0x40; // version 4
+  b[8] = (b[8] & 0x3f) | 0x80; // variant
+  const h = Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
+/** True when a payments insert failed only because this same attempt was already recorded (Postgres 23505). */
+export function isDuplicatePaymentError(error: { code?: string } | null | undefined): boolean {
+  return error?.code === '23505';
+}
+
+/**
+ * Deletes an invoice that has no money on it (no payments, no waivers, no
+ * dispensed medicine) along with its items. The database function refuses
+ * anything else -- deleting a plain invoice row would cascade to payments
+ * and erase revenue, so the app never issues a bare DELETE on invoices.
+ * Throws an Error with a user-presentable message on refusal.
+ */
+export async function deleteUnpaidInvoice(invoiceId: string): Promise<void> {
+  const { error } = await supabase.rpc('delete_unpaid_invoice', { p_invoice_id: invoiceId });
+  if (error) throw new Error(error.message);
 }
 
 /**
