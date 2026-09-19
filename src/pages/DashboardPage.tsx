@@ -24,7 +24,7 @@ export function DashboardPage() {
     fetchDashboardData();
   }, []);
 
-  // Local calendar day, NOT UTC -- see migration 039 for why. Passed to
+  // Local calendar day, NOT UTC -- see migration 041 for why. Passed to
   // get_dashboard_stats() so its "today" figures (revenue, admissions,
   // discharges, appointments) agree with the Billing page's Revenue
   // Collected card, which already buckets "today" by local date.

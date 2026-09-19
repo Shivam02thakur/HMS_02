@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
@@ -11,7 +11,10 @@ import {
   Printer, Phone, StickyNote, Pill, FlaskConical, Stethoscope, BedDouble, FileText, ChevronDown, MinusCircle,
 } from 'lucide-react';
 import { formatDate, formatCurrency, getStatusColor, getStatusLabel } from '@/lib/utils';
-import { recalcInvoicePaymentState, dispenseUndispensedMedicines, restockDispensedMedicines, recordInvoiceAdjustment } from '@/lib/billing';
+import {
+  recalcInvoicePaymentState, dispenseUndispensedMedicines, restockDispensedMedicines, recordInvoiceAdjustment,
+  newRequestId, isDuplicatePaymentError, deleteUnpaidInvoice,
+} from '@/lib/billing';
 
 type ItemType = 'medicine' | 'lab_test' | 'consultation' | 'bed_charge' | 'other';
 
@@ -93,9 +96,22 @@ export function InvoiceDetailPage() {
   // Same double-submit guard as the waiver form below -- "Record Payment"
   // was missing one, which is exactly what let a double-click (or a slow
   // request + impatient re-click) insert two payment rows for one
-  // intended payment. The DB-level guard in migration 038 is the real
+  // intended payment. The DB-level guard in migration 039 is the real
   // backstop; this avoids the wasted round-trip / confusing error.
   const [paymentSubmitting, setPaymentSubmitting] = useState(false);
+  // The state flag only updates on the next render, so two submits fired
+  // before React re-renders both still see `false`. This ref flips
+  // synchronously and drops the second one.
+  const paymentInFlight = useRef(false);
+  // One id per payment attempt, kept until that attempt succeeds; the DB
+  // rejects a repeat of the same id (migration 040), which also covers a
+  // retry after a lost response where the first insert did commit.
+  const paymentRequestId = useRef<string | null>(null);
+  // Messages that must stay visible after a modal closes (cancel-payment
+  // failures, dispense/restock warnings, item-removal errors). The modal's
+  // own `paymentError` is only rendered while that modal is open.
+  const [pageError, setPageError] = useState<string | null>(null);
+  const [deletingInvoice, setDeletingInvoice] = useState(false);
 
   useEffect(() => { if (id) fetchData(); }, [id]);
 
@@ -140,8 +156,10 @@ export function InvoiceDetailPage() {
       return;
     }
 
-    if (paymentSubmitting) return;
+    if (paymentInFlight.current) return;
+    paymentInFlight.current = true;
     setPaymentSubmitting(true);
+    if (!paymentRequestId.current) paymentRequestId.current = newRequestId();
 
     const { error } = await supabase.from('payments').insert({
       invoice_id: id,
@@ -151,14 +169,20 @@ export function InvoiceDetailPage() {
       notes: paymentForm.notes,
       received_by: user?.id,
       paid_at: paymentForm.payment_date ? new Date(paymentForm.payment_date).toISOString() : undefined,
+      client_request_id: paymentRequestId.current,
     });
 
-    if (error) {
+    // A duplicate means this very attempt already went through (earlier
+    // click, or a lost response) -- the payment exists, so carry on to
+    // the recalculation instead of reporting a failure.
+    if (error && !isDuplicatePaymentError(error)) {
       console.error('Failed to record payment:', error);
       setPaymentError(error.message);
+      paymentInFlight.current = false;
       setPaymentSubmitting(false);
       return;
     }
+    paymentRequestId.current = null;
 
     const wasPaid = invoice.status === 'PAID';
 
@@ -178,14 +202,15 @@ export function InvoiceDetailPage() {
         const failed = await dispenseUndispensedMedicines(id);
         if (failed.length > 0) {
           console.error('Some medicine items could not be dispensed:', failed);
-          setPaymentError('Payment recorded, but some medicine items could not be dispensed (check pharmacy stock).');
+          setPageError('Payment recorded, but some medicine items could not be dispensed (check pharmacy stock).');
         }
       }
     } catch (recalcErr: any) {
       console.error('Payment recorded, but failed to update invoice totals:', recalcErr);
-      setPaymentError(`Payment recorded, but the invoice totals couldn't be updated: ${recalcErr.message || recalcErr}`);
+      setPageError(`Payment recorded, but the invoice totals couldn't be updated: ${recalcErr.message || recalcErr}`);
     }
 
+    paymentInFlight.current = false;
     setPaymentSubmitting(false);
     setShowPaymentModal(false);
     setPaymentForm({ amount: '', payment_mode: 'Cash', transaction_id: '', notes: '', payment_date: todayIso() });
@@ -199,7 +224,7 @@ export function InvoiceDetailPage() {
   async function cancelPayment(payment: Payment) {
     if (!id || !invoice) return;
     if (!window.confirm(`Cancel this payment of ${formatCurrency(payment.amount)}? This cannot be undone.`)) return;
-    setPaymentError(null);
+    setPageError(null);
     setCancellingPaymentId(payment.id);
 
     const wasPaid = invoice.status === 'PAID';
@@ -207,7 +232,7 @@ export function InvoiceDetailPage() {
     const { error } = await supabase.from('payments').delete().eq('id', payment.id);
     if (error) {
       console.error('Failed to cancel payment:', error);
-      setPaymentError(error.message);
+      setPageError(error.message);
       setCancellingPaymentId(null);
       return;
     }
@@ -218,12 +243,12 @@ export function InvoiceDetailPage() {
         const failed = await restockDispensedMedicines(id);
         if (failed.length > 0) {
           console.error('Some medicine items could not be restocked:', failed);
-          setPaymentError('Payment cancelled, but some medicine items could not be restocked (check pharmacy stock).');
+          setPageError('Payment cancelled, but some medicine items could not be restocked (check pharmacy stock).');
         }
       }
     } catch (recalcErr: any) {
       console.error('Payment cancelled, but failed to update invoice totals:', recalcErr);
-      setPaymentError(`Payment cancelled, but the invoice totals couldn't be updated: ${recalcErr.message || recalcErr}`);
+      setPageError(`Payment cancelled, but the invoice totals couldn't be updated: ${recalcErr.message || recalcErr}`);
     }
 
     setCancellingPaymentId(null);
@@ -276,7 +301,7 @@ export function InvoiceDetailPage() {
         const failed = await dispenseUndispensedMedicines(id);
         if (failed.length > 0) {
           console.error('Some medicine items could not be dispensed:', failed);
-          setPaymentError('Waiver recorded, but some medicine items could not be dispensed (check pharmacy stock).');
+          setPageError('Waiver recorded, but some medicine items could not be dispensed (check pharmacy stock).');
         }
       }
     } catch (err: any) {
@@ -296,7 +321,28 @@ export function InvoiceDetailPage() {
     const item = items.find(i => i.id === itemId);
     if (!window.confirm(`Remove "${item?.description || 'this item'}" from the invoice?`)) return;
 
-    await supabase.from('invoice_items').delete().eq('id', itemId);
+    // Removing an item lowers the total. If money has already been
+    // collected/waived, don't let the total drop below it -- that would
+    // leave the invoice over-collected with no refund flow to correct it.
+    if (invoice) {
+      const settled = Number(invoice.paid_amount || 0) + Number(invoice.waived_amount || 0);
+      const totalAfter = Number(invoice.total_amount) - Number(item?.total_price || 0);
+      if (settled > 0 && totalAfter < settled - 0.01) {
+        setPageError(
+          `Can't remove "${item?.description || 'this item'}": ${formatCurrency(settled)} has already been paid or waived, ` +
+          `which is more than the invoice would total afterwards (${formatCurrency(Math.max(totalAfter, 0))}). Cancel a payment first.`
+        );
+        return;
+      }
+    }
+    setPageError(null);
+
+    const { error: deleteError } = await supabase.from('invoice_items').delete().eq('id', itemId);
+    if (deleteError) {
+      console.error('Failed to remove item:', deleteError);
+      setPageError(`Couldn't remove the item: ${deleteError.message}`);
+      return;
+    }
 
     // Medicine stock is only dispensed once the invoice is actually PAID
     // (see dispenseUndispensedMedicines in @/lib/billing), and items can
@@ -321,16 +367,38 @@ export function InvoiceDetailPage() {
             const failed = await dispenseUndispensedMedicines(id);
             if (failed.length > 0) {
               console.error('Some medicine items could not be dispensed:', failed);
-              setPaymentError('Item removed, but some medicine items could not be dispensed (check pharmacy stock).');
+              setPageError('Item removed, but some medicine items could not be dispensed (check pharmacy stock).');
             }
           }
         } catch (recalcErr: any) {
           console.error('Item removed, but failed to update invoice totals:', recalcErr);
-          setPaymentError(`Item removed, but the invoice totals couldn't be updated: ${recalcErr.message || recalcErr}`);
+          setPageError(`Item removed, but the invoice totals couldn't be updated: ${recalcErr.message || recalcErr}`);
         }
       }
     }
     fetchData();
+  }
+
+  // Removes the whole invoice -- for a patient who ends up taking nothing.
+  // Only allowed while no money is on it (the database enforces this too,
+  // because payments cascade-delete with the invoice).
+  async function deleteInvoice() {
+    if (!id || !invoice) return;
+    const itemsNote = items.length > 0
+      ? `Its ${items.length} item${items.length > 1 ? 's' : ''} (${formatCurrency(invoice.total_amount)}) will be removed with it.`
+      : 'It has no items.';
+    if (!window.confirm(`Delete invoice ${invoice.invoice_number}?\n\n${itemsNote}\nThis cannot be undone.`)) return;
+
+    setPageError(null);
+    setDeletingInvoice(true);
+    try {
+      await deleteUnpaidInvoice(id);
+    } catch (err: any) {
+      setPageError(err.message || 'Could not delete the invoice.');
+      setDeletingInvoice(false);
+      return;
+    }
+    navigate('/billing');
   }
 
   if (loading) return <div className="flex h-96 items-center justify-center">Loading...</div>;
@@ -344,10 +412,31 @@ export function InvoiceDetailPage() {
         <button onClick={() => navigate('/billing')} className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700">
           <ArrowLeft className="h-4 w-4" /> Back to Billing
         </button>
-        <button onClick={() => window.print()} className="btn-secondary text-xs py-1.5 px-3">
-          <Printer className="h-3.5 w-3.5 mr-1" /> Print
-        </button>
+        <div className="flex items-center gap-2">
+          {isReceptionist() && (
+            <button
+              onClick={deleteInvoice}
+              disabled={deletingInvoice || payments.length > 0 || adjustments.length > 0}
+              title={payments.length > 0 || adjustments.length > 0
+                ? 'This invoice has payments or waivers on it. Cancel the payments first to delete it.'
+                : 'Delete this invoice'}
+              className="btn-secondary text-xs py-1.5 px-3 text-red-600 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Trash2 className="h-3.5 w-3.5 mr-1" /> {deletingInvoice ? 'Deleting...' : 'Delete Invoice'}
+            </button>
+          )}
+          <button onClick={() => window.print()} className="btn-secondary text-xs py-1.5 px-3">
+            <Printer className="h-3.5 w-3.5 mr-1" /> Print
+          </button>
+        </div>
       </div>
+
+      {pageError && (
+        <div className="flex items-start justify-between gap-2 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700 print:hidden">
+          <span className="flex items-start gap-2"><AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />{pageError}</span>
+          <button onClick={() => setPageError(null)} className="text-red-400 hover:text-red-600 text-xs">Dismiss</button>
+        </div>
+      )}
 
       <div className="card">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">

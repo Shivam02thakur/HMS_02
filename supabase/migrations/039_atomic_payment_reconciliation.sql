@@ -1,4 +1,10 @@
--- 038_atomic_payment_reconciliation.sql
+-- 039_atomic_payment_reconciliation.sql
+--
+-- NOTE: the incremental `update_invoice_after_payment` trigger described
+-- below was already dropped by 027_lab_result_uniqueness_and_legacy_trigger_cleanup.sql,
+-- so step (a) is a safe no-op on any DB that ran 027. The real value of
+-- this migration is (b) and (c). Known gaps in this file are fixed by
+-- 040_invoice_status_rule_and_safe_delete.sql -- apply that right after.
 --
 -- ROOT CAUSE of the "payment doesn't show correctly, due doubles, then
 -- fixes itself after re-settling" bug:
