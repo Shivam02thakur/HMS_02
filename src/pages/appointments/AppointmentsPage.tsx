@@ -189,6 +189,17 @@ export function AppointmentsPage() {
       return false;
     }
 
+    // Without this, the invoice's subtotal/total_amount never reflect the
+    // charge just inserted above -- caught by checking whether this ever
+    // got called anywhere in this file; it didn't.
+    const { error: calcError } = await supabase.rpc('calculate_invoice_total', { p_invoice_id: episodeResult.invoiceId });
+    if (calcError) {
+      console.error('Appointment completed and charge added, but recalculating the invoice total failed:', calcError);
+      setCompleteError('Appointment marked complete and charge added, but the invoice total needs a manual refresh -- open the invoice in Billing.');
+      setCompleting(false);
+      return false;
+    }
+
     setCompleting(false);
     return true;
   }
