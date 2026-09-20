@@ -222,6 +222,16 @@ export interface LabTest {
   unit?: string | null;
   price: number;
   created_at: string | null;
+  // Structured auto-detection fields (#8). result_type defaults to
+  // 'manual' for any test not explicitly configured -- see migration
+  // 042 for why panel tests (Lipid/Liver/Kidney/Thyroid Profile) stay
+  // 'manual' rather than a fake single numeric range.
+  result_type: 'numeric' | 'qualitative' | 'manual';
+  normal_min?: number | null;
+  normal_max?: number | null;
+  qualitative_options?: string[] | null;
+  abnormal_values?: string[] | null;
+  default_abnormal_remark?: string | null;
 }
 
 export type LabOrderStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';

@@ -797,33 +797,51 @@ export type Database = {
       }
       lab_tests: {
         Row: {
+          abnormal_values: string[] | null
           code: string | null
           created_at: string | null
+          default_abnormal_remark: string | null
           description: string | null
           id: string
           name: string
+          normal_max: number | null
+          normal_min: number | null
           normal_range: string | null
           price: number
+          qualitative_options: string[] | null
+          result_type: string
           unit: string | null
         }
         Insert: {
+          abnormal_values?: string[] | null
           code?: string | null
           created_at?: string | null
+          default_abnormal_remark?: string | null
           description?: string | null
           id?: string
           name: string
+          normal_max?: number | null
+          normal_min?: number | null
           normal_range?: string | null
           price?: number
+          qualitative_options?: string[] | null
+          result_type?: string
           unit?: string | null
         }
         Update: {
+          abnormal_values?: string[] | null
           code?: string | null
           created_at?: string | null
+          default_abnormal_remark?: string | null
           description?: string | null
           id?: string
           name?: string
+          normal_max?: number | null
+          normal_min?: number | null
           normal_range?: string | null
           price?: number
+          qualitative_options?: string[] | null
+          result_type?: string
           unit?: string | null
         }
         Relationships: []

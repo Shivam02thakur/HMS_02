@@ -9,6 +9,7 @@ import type { LabOrder, Patient, Doctor, LabTest, LabResult } from '@/types';
 import { Plus, FlaskConical, FileCheck, Clock, AlertCircle } from 'lucide-react';
 import { formatDate, getStatusColor } from '@/lib/utils';
 import { useDebounce } from '@/hooks/useDebounce';
+import { findOrCreateEpisodeInvoice } from '@/lib/billing';
 
 export function LaboratoryPage() {
   const [labOrders, setLabOrders] = useState<LabOrder[]>([]);
@@ -21,12 +22,51 @@ export function LaboratoryPage() {
   const [showResultModal, setShowResultModal] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<LabOrder | null>(null);
   const [filterStatus, setFilterStatus] = useState('');
+  const [orderError, setOrderError] = useState('');
+  const [billingWarning, setBillingWarning] = useState('');
   const debouncedSearch = useDebounce(search, 300);
   const { user } = useAuth();
   const { isDoctor, isLabTech } = useRole();
 
   const [orderForm, setOrderForm] = useState({ patient_id: '', doctor_id: '', test_id: '', notes: '' });
   const [resultForm, setResultForm] = useState({ result_value: '', remarks: '', is_abnormal: false });
+
+  // Mirrors exactly what compute_lab_result_abnormal_flag() (migration
+  // 042) will actually decide server-side -- purely for the live hint
+  // shown while typing. The database trigger is the authoritative
+  // computation; this is not relied on for correctness, only UX.
+  const computedAbnormal = (() => {
+    const test = selectedOrder?.test;
+    if (!test || !resultForm.result_value) return false;
+    if (test.result_type === 'numeric' && test.normal_min != null && test.normal_max != null) {
+      const v = Number(resultForm.result_value);
+      return !isNaN(v) && (v < test.normal_min || v > test.normal_max);
+    }
+    if (test.result_type === 'qualitative') {
+      return (test.abnormal_values || []).includes(resultForm.result_value);
+    }
+    return false;
+  })();
+
+  function handleResultValueChange(value: string) {
+    setResultForm(prev => {
+      const next = { ...prev, result_value: value };
+      const test = selectedOrder?.test;
+      // Auto-suggest the default remark once the value crosses into
+      // abnormal -- but only into an empty remarks field, never
+      // overwriting something the tech has already typed themselves.
+      if (test?.default_abnormal_remark && !prev.remarks) {
+        const willBeAbnormal =
+          test.result_type === 'numeric' && test.normal_min != null && test.normal_max != null
+            ? !isNaN(Number(value)) && (Number(value) < test.normal_min || Number(value) > test.normal_max)
+            : test.result_type === 'qualitative'
+            ? (test.abnormal_values || []).includes(value)
+            : false;
+        if (willBeAbnormal) next.remarks = test.default_abnormal_remark;
+      }
+      return next;
+    });
+  }
 
   useEffect(() => { fetchData(); }, [debouncedSearch, filterStatus]);
 
@@ -51,13 +91,71 @@ export function LaboratoryPage() {
     ]);
     setPatients((p || []) as unknown as Patient[]);
     setDoctors((d || []) as unknown as Doctor[]);
-    setTests(t || []);
+    setTests((t || []) as unknown as LabTest[]);
     setLoading(false);
   }
 
   async function handleOrderSubmit(e: React.FormEvent) {
     e.preventDefault();
-    await supabase.from('lab_orders').insert({ ...orderForm, created_by: user?.id });
+    setOrderError('');
+    const { data: order, error } = await supabase.from('lab_orders')
+      .insert({ ...orderForm, created_by: user?.id })
+      .select('id')
+      .single();
+    if (error || !order) {
+      setOrderError('Could not create lab order. Please try again.');
+      console.error(error);
+      return;
+    }
+
+    const test = tests.find(t => t.id === orderForm.test_id);
+    if (test) {
+      // Tests ordered during an active stay bill to that admission's
+      // episode (matching #14's "everything during the stay accumulates
+      // onto one invoice"); everyone else gets a WALK_IN episode. Lab
+      // orders have no appointment_id to check against an OPD_VISIT
+      // episode -- admission is the only context this form has to work
+      // with beyond the bare patient.
+      const { data: activeAdmission } = await supabase
+        .from('admissions')
+        .select('id')
+        .eq('patient_id', orderForm.patient_id)
+        .eq('status', 'ADMITTED')
+        .maybeSingle();
+
+      const result = await findOrCreateEpisodeInvoice(
+        activeAdmission
+          ? { episode_type: 'ADMISSION', patient_id: orderForm.patient_id, admission_id: activeAdmission.id }
+          : { episode_type: 'WALK_IN', patient_id: orderForm.patient_id },
+        user?.id
+      );
+
+      if ('error' in result) {
+        console.error('Failed to bill lab order:', result.error);
+        setBillingWarning(`Test ordered, but billing failed (${result.error}). Add the charge manually from Billing.`);
+      } else {
+        const { error: itemError } = await supabase.from('invoice_items').insert({
+          invoice_id: result.invoiceId,
+          description: test.name,
+          item_type: 'lab_test',
+          reference_id: test.id,
+          quantity: 1,
+          unit_price: test.price,
+          total_price: test.price,
+        });
+        if (itemError) {
+          console.error('Failed to add lab test charge:', itemError);
+          setBillingWarning(`Test ordered, but billing failed (${itemError.message}). Add the charge manually from Billing.`);
+        } else {
+          const { error: calcError } = await supabase.rpc('calculate_invoice_total', { p_invoice_id: result.invoiceId });
+          if (calcError) {
+            console.error('Test ordered and charge added, but recalculating the invoice total failed:', calcError);
+            setBillingWarning('Test ordered and charge added, but the invoice total needs a manual refresh -- open the invoice in Billing.');
+          }
+        }
+      }
+    }
+
     setShowOrderModal(false);
     setOrderForm({ patient_id: '', doctor_id: '', test_id: '', notes: '' });
     fetchData();
@@ -79,6 +177,7 @@ export function LaboratoryPage() {
 
   function openResultModal(order: LabOrder) {
     setSelectedOrder(order);
+    setResultForm({ result_value: '', remarks: '', is_abnormal: false });
     setShowResultModal(true);
   }
 
@@ -95,6 +194,15 @@ export function LaboratoryPage() {
           </button>
         )}
       </div>
+
+      {billingWarning && (
+        <div className="flex items-start justify-between gap-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          <span>{billingWarning}</span>
+          <button onClick={() => setBillingWarning('')} className="flex-shrink-0 text-xs font-medium text-amber-600 hover:text-amber-700">
+            Dismiss
+          </button>
+        </div>
+      )}
 
       <div className="card">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
@@ -177,8 +285,12 @@ export function LaboratoryPage() {
             <label className="label">Notes</label>
             <textarea value={orderForm.notes} onChange={e => setOrderForm({...orderForm, notes: e.target.value})} className="input" rows={2} />
           </div>
+          <p className="text-xs text-gray-400">The test charge will be added automatically to the patient's billing episode.</p>
+          {orderError && (
+            <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{orderError}</div>
+          )}
           <div className="flex justify-end gap-3">
-            <button type="button" onClick={() => setShowOrderModal(false)} className="btn-secondary">Cancel</button>
+            <button type="button" onClick={() => { setShowOrderModal(false); setOrderError(''); }} className="btn-secondary">Cancel</button>
             <button type="submit" className="btn-primary">Order Test</button>
           </div>
         </form>
@@ -186,18 +298,58 @@ export function LaboratoryPage() {
 
       <Modal isOpen={showResultModal} onClose={() => setShowResultModal(false)} title={`Enter Result - ${selectedOrder?.test?.name}`}>
         <form onSubmit={handleResultSubmit} className="space-y-4">
-          <div>
-            <label className="label">Result Value *</label>
-            <input required value={resultForm.result_value} onChange={e => setResultForm({...resultForm, result_value: e.target.value})} className="input" placeholder={`Normal range: ${selectedOrder?.test?.normal_range} ${selectedOrder?.test?.unit}`} />
-          </div>
+          {selectedOrder?.test?.result_type === 'numeric' ? (
+            <div>
+              <label className="label">Result Value * {selectedOrder.test.unit ? `(${selectedOrder.test.unit})` : ''}</label>
+              <input
+                required type="number" step="any"
+                value={resultForm.result_value}
+                onChange={e => handleResultValueChange(e.target.value)}
+                className="input"
+                placeholder={`Normal range: ${selectedOrder.test.normal_min}-${selectedOrder.test.normal_max}`}
+              />
+              {resultForm.result_value && !isNaN(Number(resultForm.result_value)) && (
+                <p className={`mt-1 text-xs font-medium ${computedAbnormal ? 'text-red-600' : 'text-green-600'}`}>
+                  {computedAbnormal ? 'Outside normal range -- will be flagged abnormal' : 'Within normal range'}
+                </p>
+              )}
+            </div>
+          ) : selectedOrder?.test?.result_type === 'qualitative' ? (
+            <div>
+              <label className="label">Result *</label>
+              <select required value={resultForm.result_value} onChange={e => handleResultValueChange(e.target.value)} className="input">
+                <option value="">Select finding</option>
+                {(selectedOrder.test.qualitative_options || []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+              </select>
+              {resultForm.result_value && (
+                <p className={`mt-1 text-xs font-medium ${computedAbnormal ? 'text-red-600' : 'text-green-600'}`}>
+                  {computedAbnormal ? 'Flagged abnormal' : 'Normal finding'}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div>
+              <label className="label">Result Value *</label>
+              <input required value={resultForm.result_value} onChange={e => setResultForm({...resultForm, result_value: e.target.value})} className="input" placeholder={`Normal range: ${selectedOrder?.test?.normal_range} ${selectedOrder?.test?.unit}`} />
+            </div>
+          )}
+
           <div>
             <label className="label">Remarks</label>
             <textarea value={resultForm.remarks} onChange={e => setResultForm({...resultForm, remarks: e.target.value})} className="input" rows={2} />
           </div>
-          <div className="flex items-center gap-2">
-            <input type="checkbox" id="is_abnormal" checked={resultForm.is_abnormal} onChange={e => setResultForm({...resultForm, is_abnormal: e.target.checked})} className="rounded border-gray-300 text-primary-600" />
-            <label htmlFor="is_abnormal" className="text-sm text-gray-700">Abnormal Result</label>
-          </div>
+
+          {/* Manual checkbox stays exactly as before, but only for tests
+              this system can't reliably auto-detect (see migration 042's
+              header comment) -- numeric/qualitative tests get computed
+              automatically and never show this control. */}
+          {(!selectedOrder?.test?.result_type || selectedOrder.test.result_type === 'manual') && (
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="is_abnormal" checked={resultForm.is_abnormal} onChange={e => setResultForm({...resultForm, is_abnormal: e.target.checked})} className="rounded border-gray-300 text-primary-600" />
+              <label htmlFor="is_abnormal" className="text-sm text-gray-700">Abnormal Result</label>
+            </div>
+          )}
+
           <div className="flex justify-end gap-3">
             <button type="button" onClick={() => setShowResultModal(false)} className="btn-secondary">Cancel</button>
             <button type="submit" className="btn-primary">Submit Result</button>
