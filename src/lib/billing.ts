@@ -421,5 +421,13 @@ export async function billClosedWardSegment(admissionId: string, episodeInvoiceI
     .eq('id', segment.id);
   if (updateErr) return updateErr.message;
 
+  // Without this, the invoice's subtotal/total_amount never reflect the
+  // charge just inserted above -- it would silently stay at whatever it
+  // was before (0 for a freshly-created invoice), forever, since nothing
+  // else recomputes it. Caught by checking whether this ever actually
+  // got called anywhere in this codebase; it didn't.
+  const { error: calcErr } = await supabase.rpc('calculate_invoice_total', { p_invoice_id: episodeInvoiceId });
+  if (calcErr) return calcErr.message;
+
   return null;
 }
