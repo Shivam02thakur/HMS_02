@@ -27,6 +27,7 @@ export function AdmissionsPage() {
   const [selectedAdmission, setSelectedAdmission] = useState<Admission | null>(null);
   const [formError, setFormError] = useState('');
   const [transferError, setTransferError] = useState('');
+  const [billingWarning, setBillingWarning] = useState('');
   const debouncedSearch = useDebounce(search, 300);
   const { isReceptionist } = useRole();
   const { user } = useAuth();
@@ -136,6 +137,7 @@ export function AdmissionsPage() {
       console.error('Admission succeeded but opening its billing episode failed:', episodeResult.error);
       // Non-blocking: the patient is genuinely admitted; a missing
       // episode can be created later the first time a charge needs one.
+      setBillingWarning(`Patient admitted, but billing setup failed (${episodeResult.error}). Add charges manually from Billing for this stay.`);
     }
     setShowModal(false);
     setForm({ patient_id: '', doctor_id: '', ward_id: '', room_id: '', bed_id: '', diagnosis: '', notes: '', department_id: '' });
@@ -162,9 +164,13 @@ export function AdmissionsPage() {
     );
     if ('error' in episodeResult) {
       console.error('Discharge succeeded but billing the final ward segment failed to find its episode:', episodeResult.error);
+      setBillingWarning(`Patient discharged, but the final ward charge could not be added (${episodeResult.error}). Add it manually from Billing.`);
     } else {
       const billErr = await billClosedWardSegment(selectedAdmission.id, episodeResult.invoiceId);
-      if (billErr) console.error('Discharge succeeded but billing the final ward segment failed:', billErr);
+      if (billErr) {
+        console.error('Discharge succeeded but billing the final ward segment failed:', billErr);
+        setBillingWarning(`Patient discharged, but the final ward charge could not be added (${billErr}). Add it manually from Billing.`);
+      }
       const closeErr = await closeEpisode(episodeResult.episodeId);
       if (closeErr) console.error('Discharge succeeded but closing the billing episode failed:', closeErr);
     }
@@ -203,9 +209,13 @@ export function AdmissionsPage() {
     );
     if ('error' in episodeResult) {
       console.error('Transfer succeeded but billing the closed ward segment failed to find its episode:', episodeResult.error);
+      setBillingWarning(`Transfer completed, but the outgoing ward charge could not be added (${episodeResult.error}). Add it manually from Billing.`);
     } else {
       const billErr = await billClosedWardSegment(selectedAdmission.id, episodeResult.invoiceId);
-      if (billErr) console.error('Transfer succeeded but billing the closed ward segment failed:', billErr);
+      if (billErr) {
+        console.error('Transfer succeeded but billing the closed ward segment failed:', billErr);
+        setBillingWarning(`Transfer completed, but the outgoing ward charge could not be added (${billErr}). Add it manually from Billing.`);
+      }
     }
     setShowTransferModal(false);
     setSelectedAdmission(null);
@@ -234,6 +244,15 @@ export function AdmissionsPage() {
           </button>
         )}
       </div>
+
+      {billingWarning && (
+        <div className="flex items-start justify-between gap-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          <span>{billingWarning}</span>
+          <button onClick={() => setBillingWarning('')} className="flex-shrink-0 text-xs font-medium text-amber-600 hover:text-amber-700">
+            Dismiss
+          </button>
+        </div>
+      )}
 
       <div className="card">
         <div className="mb-4">

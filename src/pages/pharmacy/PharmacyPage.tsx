@@ -48,6 +48,7 @@ export function PharmacyPage() {
 
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(true);
+  const [ordersError, setOrdersError] = useState('');
   const [orderSubTab, setOrderSubTab] = useState<'pending' | 'dispensed'>('pending');
 
   const [form, setForm] = useState({
@@ -82,7 +83,12 @@ export function PharmacyPage() {
       .select('id, description, quantity, dispensed, created_at, invoice:invoices(id, invoice_number, status, patient:patients(full_name))')
       .eq('item_type', 'medicine')
       .order('created_at', { ascending: false });
-    if (error) console.error('Failed to load pharmacy orders:', error);
+    if (error) {
+      console.error('Failed to load pharmacy orders:', error);
+      setOrdersError('Could not load medicine orders. Try refreshing.');
+    } else {
+      setOrdersError('');
+    }
     setOrders((data || []) as unknown as OrderRow[]);
     setOrdersLoading(false);
   }
@@ -293,6 +299,9 @@ export function PharmacyPage() {
             </button>
           </div>
           {ordersLoading ? <div className="py-12 text-center">Loading...</div> :
+          ordersError ? (
+            <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{ordersError}</div>
+          ) :
           visibleOrders.length === 0 ? <EmptyState title={`No ${orderSubTab} orders`} /> : (
             <div className="overflow-x-auto">
               <table className="w-full">
