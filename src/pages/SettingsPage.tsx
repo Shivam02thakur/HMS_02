@@ -53,6 +53,7 @@ export function SettingsPage() {
 
   // ---- Doctor self-edit (#18) ----
   const [myDoctorRecord, setMyDoctorRecord] = useState<Doctor | null>(null);
+  const [myDoctorError, setMyDoctorError] = useState('');
   const [selfEditForm, setSelfEditForm] = useState<Record<SelfEditableField, string | string[] | boolean>>({
     phone: '', specialization: '', experience_years: '', consultation_fee: '',
     available_days: [], available_time_start: '', available_time_end: '', is_active: true,
@@ -64,6 +65,7 @@ export function SettingsPage() {
 
   // ---- Admin review queue (#18) ----
   const [pendingRequests, setPendingRequests] = useState<ProfileChangeRequest[]>([]);
+  const [pendingRequestsError, setPendingRequestsError] = useState('');
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
   const [reviewError, setReviewError] = useState('');
@@ -80,7 +82,13 @@ export function SettingsPage() {
   }, [user?.id]);
 
   async function fetchMyDoctorRecord() {
-    const { data } = await supabase.from('doctors').select('*').eq('user_id', user!.id).maybeSingle();
+    const { data, error } = await supabase.from('doctors').select('*').eq('user_id', user!.id).maybeSingle();
+    if (error) {
+      console.error('Failed to load doctor record:', error);
+      setMyDoctorError('Could not check your doctor record. Try refreshing.');
+      return;
+    }
+    setMyDoctorError('');
     if (data) {
       setMyDoctorRecord(data as unknown as Doctor);
       setSelfEditForm({
@@ -100,9 +108,15 @@ export function SettingsPage() {
   }
 
   async function fetchPendingRequests() {
-    const { data } = await supabase.from('profile_change_requests')
+    const { data, error } = await supabase.from('profile_change_requests')
       .select('*, requester:profiles!profile_change_requests_requested_by_fkey(full_name, email)')
       .eq('status', 'PENDING').order('created_at', { ascending: true });
+    if (error) {
+      console.error('Failed to load pending profile change requests:', error);
+      setPendingRequestsError('Could not load pending requests. Try refreshing.');
+    } else {
+      setPendingRequestsError('');
+    }
     setPendingRequests((data || []) as unknown as ProfileChangeRequest[]);
   }
 
@@ -327,6 +341,10 @@ export function SettingsPage() {
         </div>
       </div>
 
+      {isDoctor() && myDoctorError && (
+        <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{myDoctorError}</div>
+      )}
+
       {isDoctor() && myDoctorRecord && (
         <div className="card">
           <div className="flex items-center gap-3 mb-4">
@@ -418,7 +436,7 @@ export function SettingsPage() {
         </div>
       )}
 
-      {isAdmin() && pendingRequests.length > 0 && (
+      {isAdmin() && (pendingRequestsError || pendingRequests.length > 0) && (
         <div className="card">
           <div className="flex items-center gap-3 mb-4">
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-100">
@@ -434,6 +452,9 @@ export function SettingsPage() {
               <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" /><span>{reviewError}</span>
             </div>
           )}
+          {pendingRequestsError ? (
+            <p className="text-sm text-red-600">{pendingRequestsError}</p>
+          ) : (
           <div className="space-y-3">
             {pendingRequests.map(r => (
               <div key={r.id} className="rounded-lg border border-gray-200 p-3">
@@ -456,6 +477,7 @@ export function SettingsPage() {
               </div>
             ))}
           </div>
+          )}
         </div>
       )}
 

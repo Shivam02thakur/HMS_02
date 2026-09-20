@@ -21,6 +21,7 @@ export function HygienePage() {
   const [todayLogs, setTodayLogs] = useState<CleaningLog[]>([]);
   const [wards, setWards] = useState<Ward[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState('');
 
   const [showLogModal, setShowLogModal] = useState(false);
   const [logZone, setLogZone] = useState<CleaningZone | null>(null);
@@ -40,11 +41,23 @@ export function HygienePage() {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
-    const [{ data: zonesData }, { data: logsData }, { data: wardsData }] = await Promise.all([
+    const [
+      { data: zonesData, error: zonesError },
+      { data: logsData, error: logsError },
+      { data: wardsData, error: wardsError },
+    ] = await Promise.all([
       supabase.from('cleaning_zones').select('*, ward:wards(*)').eq('is_active', true).order('zone_type').order('name'),
       supabase.from('cleaning_logs').select('*, logged_by_profile:profiles(full_name)').gte('cleaned_at', todayStart.toISOString()),
       supabase.from('wards').select('*').order('name'),
     ]);
+
+    if (zonesError || logsError || wardsError) {
+      console.error('Failed to load hygiene data:', zonesError || logsError || wardsError);
+      setFetchError('Could not load cleaning zones. Try refreshing.');
+    } else {
+      setFetchError('');
+    }
+
     setZones((zonesData || []) as unknown as CleaningZone[]);
     setTodayLogs((logsData || []) as unknown as CleaningLog[]);
     setWards((wardsData || []) as unknown as Ward[]);
@@ -125,6 +138,9 @@ export function HygienePage() {
       </div>
 
       {loading ? <div className="py-12 text-center">Loading...</div> :
+      fetchError ? (
+        <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{fetchError}</div>
+      ) :
       zones.length === 0 ? <EmptyState title="No cleaning zones yet" /> : (
         (Object.keys(grouped) as CleaningZoneType[]).map(type => (
           grouped[type].length === 0 ? null : (
