@@ -5,23 +5,46 @@ import { useRole } from '@/hooks/useRole';
 import {
   LayoutDashboard, Users, Stethoscope, CalendarDays, FileText,
   Pill, FlaskConical, Receipt, BedDouble, Settings, LogOut,
-  Menu, X, ChevronDown, ChevronRight, UserCircle, Building2, Sparkles
+  Menu, X, ChevronDown, ChevronRight, UserCircle, Building2, Sparkles, Search
 } from 'lucide-react';
 import { NotificationBell } from '@/components/layout/NotificationBell.tsx';
 
-const navItems = [
-  { path: '/', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin', 'receptionist', 'doctor', 'pharmacist', 'lab_technician'] },
-  { path: '/patients', label: 'Patients', icon: Users, roles: ['admin', 'receptionist', 'doctor', 'pharmacist', 'lab_technician'] },
-  { path: '/doctors', label: 'Doctors', icon: Stethoscope, roles: ['admin', 'receptionist', 'doctor'] },
-  { path: '/departments', label: 'Departments', icon: Building2, roles: ['admin', 'receptionist', 'doctor'] },
-  { path: '/appointments', label: 'Appointments', icon: CalendarDays, roles: ['admin', 'receptionist', 'doctor'] },
-  { path: '/prescriptions', label: 'Prescriptions', icon: FileText, roles: ['admin', 'doctor', 'pharmacist'] },
-  { path: '/pharmacy', label: 'Pharmacy', icon: Pill, roles: ['admin', 'pharmacist'] },
-  { path: '/laboratory', label: 'Laboratory', icon: FlaskConical, roles: ['admin', 'doctor', 'lab_technician'] },
-  { path: '/billing', label: 'Billing', icon: Receipt, roles: ['admin', 'receptionist'] },
-  { path: '/ipd', label: 'IPD / Wards', icon: BedDouble, roles: ['admin', 'receptionist', 'doctor'] },
-  { path: '/hygiene', label: 'Hygiene', icon: Sparkles, roles: ['admin', 'receptionist'] },
-  { path: '/settings', label: 'Settings', icon: Settings, roles: ['admin', 'doctor'] },
+// Grouped into sections (rather than one flat list) so the sidebar reads
+// like a map of the app instead of a wall of links — mirrors the grouped
+// nav pattern from the redesign guidance.
+const navGroups = [
+  {
+    label: 'Overview',
+    items: [
+      { path: '/', label: 'Dashboard', icon: LayoutDashboard, roles: ['admin', 'receptionist', 'doctor', 'pharmacist', 'lab_technician'] },
+    ],
+  },
+  {
+    label: 'Clinical',
+    items: [
+      { path: '/patients', label: 'Patients', icon: Users, roles: ['admin', 'receptionist', 'doctor', 'pharmacist', 'lab_technician'] },
+      { path: '/doctors', label: 'Doctors', icon: Stethoscope, roles: ['admin', 'receptionist', 'doctor'] },
+      { path: '/appointments', label: 'Appointments', icon: CalendarDays, roles: ['admin', 'receptionist', 'doctor'] },
+      { path: '/prescriptions', label: 'Prescriptions', icon: FileText, roles: ['admin', 'doctor', 'pharmacist'] },
+      { path: '/laboratory', label: 'Laboratory', icon: FlaskConical, roles: ['admin', 'doctor', 'lab_technician'] },
+      { path: '/ipd', label: 'IPD / Wards', icon: BedDouble, roles: ['admin', 'receptionist', 'doctor'] },
+    ],
+  },
+  {
+    label: 'Operations',
+    items: [
+      { path: '/pharmacy', label: 'Pharmacy', icon: Pill, roles: ['admin', 'pharmacist'] },
+      { path: '/billing', label: 'Billing', icon: Receipt, roles: ['admin', 'receptionist'] },
+      { path: '/departments', label: 'Departments', icon: Building2, roles: ['admin', 'receptionist', 'doctor'] },
+      { path: '/hygiene', label: 'Hygiene', icon: Sparkles, roles: ['admin', 'receptionist'] },
+    ],
+  },
+  {
+    label: 'Admin',
+    items: [
+      { path: '/settings', label: 'Settings', icon: Settings, roles: ['admin', 'doctor'] },
+    ],
+  },
 ];
 
 export function Layout() {
@@ -36,7 +59,9 @@ export function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const filteredNav = navItems.filter(item => hasRole(item.roles as any));
+  const filteredGroups = navGroups
+    .map(group => ({ ...group, items: group.items.filter(item => hasRole(item.roles as any)) }))
+    .filter(group => group.items.length > 0);
 
   return (
     <div className="flex h-screen bg-gray-50 print:block print:h-auto">
@@ -58,20 +83,25 @@ export function Layout() {
         </div>
 
         <nav className="flex-1 space-y-1 p-4 overflow-y-auto" style={{ height: 'calc(100vh - 64px - 80px)' }}>
-          {filteredNav.map((item) => {
-            const Icon = item.icon;
-            const isActive = location.pathname === item.path || location.pathname.startsWith(item.path + '/');
-            return (
-              <button
-                key={item.path}
-                onClick={() => { navigate(item.path); setSidebarOpen(false); }}
-                className={`sidebar-link w-full ${isActive ? 'active' : ''}`}
-              >
-                <Icon className="h-5 w-5" />
-                {item.label}
-              </button>
-            );
-          })}
+          {filteredGroups.map((group) => (
+            <div key={group.label} className="mb-1">
+              <p className="nav-section-label">{group.label}</p>
+              {group.items.map((item) => {
+                const Icon = item.icon;
+                const isActive = location.pathname === item.path || location.pathname.startsWith(item.path + '/');
+                return (
+                  <button
+                    key={item.path}
+                    onClick={() => { navigate(item.path); setSidebarOpen(false); }}
+                    className={`sidebar-link w-full ${isActive ? 'active' : ''}`}
+                  >
+                    <Icon className="h-5 w-5" />
+                    {item.label}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </nav>
 
         <div className="absolute bottom-0 left-0 right-0 border-t border-gray-200 bg-white p-4">
@@ -93,11 +123,28 @@ export function Layout() {
       {/* Main content */}
       <div className="flex flex-1 flex-col min-w-0 print:block">
         {/* Header */}
-        <header className="flex h-16 items-center gap-4 border-b border-gray-200 bg-white px-4 lg:px-8 print:hidden">
+        <header className="sticky top-0 z-30 flex h-16 items-center gap-4 border-b border-gray-200 app-header-blur px-4 lg:px-8 print:hidden">
           <button onClick={() => setSidebarOpen(true)} className="lg:hidden">
             <Menu className="h-6 w-6 text-gray-600" />
           </button>
-          <div className="flex-1" />
+
+          <div className="relative hidden max-w-sm flex-1 sm:block">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+            <input
+              type="search"
+              placeholder="Search patients, doctors, invoices…"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  const q = (e.target as HTMLInputElement).value.trim();
+                  if (q) navigate(`/patients?q=${encodeURIComponent(q)}`);
+                }
+              }}
+              className="h-10 w-full rounded-xl border border-gray-200 bg-gray-50/70 pl-9 pr-3 text-sm outline-none transition-colors placeholder:text-gray-400 focus:border-primary-400 focus:bg-white focus:ring-2 focus:ring-primary-100"
+            />
+          </div>
+
+          <div className="flex-1 sm:hidden" />
+
           <div className="flex items-center gap-3">
             <span className="text-sm text-gray-500 hidden sm:block">
               {now.toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}

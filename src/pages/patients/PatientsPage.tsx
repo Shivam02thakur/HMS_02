@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useRole } from '@/hooks/useRole';
 import { Modal } from '@/components/ui/Modal';
 import { SearchInput } from '@/components/ui/SearchInput';
@@ -13,9 +13,12 @@ import { formatDate, BLOOD_GROUPS } from '@/lib/utils';
 import { useDebounce } from '@/hooks/useDebounce';
 
 export function PatientsPage() {
+  const [searchParams] = useSearchParams();
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
+  // Prefilled from ?q= so the global topbar search (which links here) has
+  // somewhere for its query to land.
+  const [search, setSearch] = useState(() => searchParams.get('q') || '');
   const [showModal, setShowModal] = useState(false);
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Patient | null>(null);
