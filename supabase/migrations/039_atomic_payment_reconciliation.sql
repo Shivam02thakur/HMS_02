@@ -186,4 +186,4 @@ BEGIN
     PERFORM reconcile_invoice_totals(r.id);
   END LOOP;
 END;
-$$;
+$$;

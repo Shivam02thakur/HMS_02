@@ -2,48 +2,108 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------------------------------------------------------------------
+ * Design tokens: light and dark are two intentionally designed palettes,
+ * not one inverted automatically. Every status bg/fg pair here meets
+ * WCAG AA (4.5:1) -- verified when these were written; re-check if you
+ * change a value. `.dark` is toggled on <html> by ThemeContext.
+ * ------------------------------------------------------------------- */
+:root {
+  --c-bg: 246 248 249;
+  --c-surface: 255 255 255;
+  --c-surface-muted: 243 246 247;
+  --c-line: 227 232 234;
+  --c-ink: 17 24 39;
+  --c-ink-muted: 75 85 99;
+  --c-ink-subtle: 107 114 128;
+  --c-success-bg: 220 245 232;
+  --c-success-fg: 11 91 58;
+  --c-caution-bg: 253 240 208;
+  --c-caution-fg: 122 75 6;
+  --c-danger-bg: 253 232 232;
+  --c-danger-fg: 155 28 28;
+  --c-info-bg: 212 243 240;
+  --c-info-fg: 30 100 98;
+  --c-neutral-bg: 238 241 243;
+  --c-neutral-fg: 55 65 81;
+}
+.dark {
+  --c-bg: 11 18 21;
+  --c-surface: 17 26 30;
+  --c-surface-muted: 22 34 40;
+  --c-line: 36 52 58;
+  --c-ink: 231 238 240;
+  --c-ink-muted: 163 180 185;
+  --c-ink-subtle: 127 146 152;
+  --c-success-bg: 23 56 50;
+  --c-success-fg: 110 231 183;
+  --c-caution-bg: 54 52 31;
+  --c-caution-fg: 252 211 77;
+  --c-danger-bg: 54 40 43;
+  --c-danger-fg: 252 165 165;
+  --c-info-bg: 25 51 53;
+  --c-info-fg: 117 210 204;
+  --c-neutral-bg: 38 48 55;
+  --c-neutral-fg: 203 213 225;
+}
+
 @layer base {
   html {
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
   }
   body {
-    @apply bg-gray-50 text-gray-900 antialiased;
+    @apply bg-bg text-ink antialiased transition-colors;
   }
 }
 
 @layer components {
   .btn-primary {
-    @apply inline-flex items-center justify-center rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply inline-flex items-center justify-center rounded-xl bg-primary-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed;
   }
   .btn-secondary {
-    @apply inline-flex items-center justify-center rounded-lg bg-white px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 transition-colors hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2;
+    @apply inline-flex items-center justify-center rounded-xl bg-surface px-4 py-2 text-sm font-medium text-ink-muted border border-line transition-colors hover:bg-surface-muted focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2;
   }
   .btn-danger {
-    @apply inline-flex items-center justify-center rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2;
+    @apply inline-flex items-center justify-center rounded-xl bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2;
   }
   .card {
-    @apply rounded-xl bg-white p-6 shadow-sm border border-gray-100;
+    @apply rounded-2xl bg-surface p-6 shadow-card border border-line transition-shadow;
   }
   .input {
-    @apply block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500;
+    @apply block w-full rounded-xl border border-line bg-surface px-3 py-2 text-sm text-ink placeholder-ink-subtle focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500;
   }
   .label {
-    @apply block text-sm font-medium text-gray-700 mb-1;
+    @apply block text-sm font-medium text-ink-muted mb-1;
   }
   .table-header {
-    @apply px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 bg-gray-50;
+    @apply px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-ink-subtle bg-surface-muted;
   }
   .table-cell {
-    @apply px-4 py-3 text-sm text-gray-700 border-b border-gray-100;
+    @apply px-4 py-3 text-sm text-ink-muted border-b border-line;
   }
   .badge {
     @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
   }
   .sidebar-link {
-    @apply flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900;
+    @apply relative flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium text-ink-muted transition-colors hover:bg-surface-muted hover:text-ink;
   }
   .sidebar-link.active {
-    @apply bg-primary-50 text-primary-700;
+    @apply bg-primary-50 text-primary-700 dark:bg-primary-900/40 dark:text-primary-200;
+  }
+  /* Left accent bar on the active nav item, matching the redesign's
+     "current section" indicator. */
+  .sidebar-link.active::before {
+    content: '';
+    @apply absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 -translate-x-3 rounded-r-full bg-primary-600;
+  }
+  .nav-section-label {
+    /* was text-gray-400 (2.5:1, fails AA) -- ink-subtle is verified 4.5:1+
+       in both themes. See the redesign brief's contrast audit. */
+    @apply px-3 pb-1.5 pt-3 text-[11px] font-semibold uppercase tracking-wider text-ink-subtle;
   }
 }
 
@@ -71,4 +131,54 @@
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
+}
+
+/* Sticky, blurred header to match the rest of the app's frosted-glass feel. */
+.app-header-blur {
+  background-color: rgb(255 255 255 / 0.8);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.dark .app-header-blur {
+  background-color: rgb(var(--c-surface) / 0.75);
+}
+
+/* ---------------------------------------------------------------------
+ * Dashboard surface recipes. Three zones, three treatments, per the
+ * approved design: KPI cards get a soft gradient wash tinted by the
+ * card's own hue (--tile, set inline per card); chart/summary cards get
+ * a glow border+shadow in the same hue; list/alert cards stay tinted.
+ * Scoped to the dashboard for now -- see the redesign PR plan before
+ * reusing these elsewhere.
+ * ------------------------------------------------------------------- */
+.card-kpi {
+  --tile: theme('colors.primary.500');
+  @apply rounded-kpi border border-line p-4 transition-transform hover:-translate-y-0.5;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--tile) 15%, rgb(var(--c-surface))) 0%, rgb(var(--c-surface)) 62%);
+}
+.card-chart {
+  --tile: theme('colors.primary.500');
+  @apply rounded-chart border p-5 bg-surface;
+  border-color: color-mix(in srgb, var(--tile) 28%, rgb(var(--c-line)));
+  box-shadow: 0 10px 26px -14px color-mix(in srgb, var(--tile) 55%, transparent);
+}
+.card-list {
+  --tile: theme('colors.primary.500');
+  @apply rounded-chart border border-line p-5;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--tile) 7%, rgb(var(--c-surface))), rgb(var(--c-surface)) 75%);
+}
+.card-alert {
+  @apply rounded-alert border p-4;
+}
+
+/* Status: dot + text, text tinted with the dot's own colour. Same status
+   vocabulary as getStatusColor (see src/lib/utils.ts) -- this only
+   changes presentation, never the stored status string. */
+.status-dot {
+  @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium;
+}
+.status-dot::before {
+  content: '';
+  @apply h-1.5 w-1.5 rounded-full;
+  background: currentColor;
 }

@@ -7,8 +7,11 @@ import { SearchInput } from '@/components/ui/SearchInput';
 import { EmptyState } from '@/components/ui/EmptyState';
 import type { Appointment, Patient, Doctor, Department } from '@/types';
 import { findOrCreateEpisodeInvoice } from '@/lib/billing';
+import { AppointmentTimeline } from '@/components/appointments/AppointmentTimeline';
+import { BusyHoursHeatmap } from '@/components/appointments/BusyHoursHeatmap';
 import { Plus, User, Stethoscope, CheckCircle, XCircle, AlertCircle, RefreshCw } from 'lucide-react';
-import { formatDate, formatTime, getStatusColor, TIME_SLOTS } from '@/lib/utils';
+import { formatDate, formatTime, TIME_SLOTS } from '@/lib/utils';
+import { StatusBadge } from '@/components/ui/StatusBadge';
 import { useDebounce } from '@/hooks/useDebounce';
 
 export function AppointmentsPage() {
@@ -33,15 +36,37 @@ export function AppointmentsPage() {
   const debouncedSearch = useDebounce(search, 300);
   const { user } = useAuth();
   const { isReceptionist, isDoctor } = useRole();
+  // Raw role check, not isDoctor()/isReceptionist() -- those helpers also
+  // return true for admin (by design, so admins can use doctor/reception
+  // actions), which would wrongly scope an admin's own list down to a
+  // single doctor's appointments.
+  const isDoctorRole = user?.role === 'doctor';
+  const [myDoctorId, setMyDoctorId] = useState<string | null>(null);
+  // Doctors need their doctors.id resolved before the first fetch, or
+  // we'd briefly fetch (and flash) every doctor's appointments before
+  // narrowing to their own. Non-doctor roles have nothing to resolve.
+  const [doctorIdReady, setDoctorIdReady] = useState(!isDoctorRole);
 
   const [form, setForm] = useState({ department_id: '', patient_id: '', doctor_id: '', appointment_date: '', appointment_time: '', notes: '' });
 
-  useEffect(() => { fetchData(); }, [debouncedSearch, filterDate]);
+  useEffect(() => { if (doctorIdReady) fetchData(); }, [debouncedSearch, filterDate, isDoctorRole, myDoctorId, doctorIdReady]);
+
+  // A doctor only sees their own appointments here -- previously everyone
+  // saw every doctor's schedule regardless of role. Resolve their
+  // doctors.id once via doctors.user_id (the auth link), same approach as
+  // the Dashboard PR.
+  useEffect(() => {
+    if (!isDoctorRole || !user?.id) { setMyDoctorId(null); setDoctorIdReady(true); return; }
+    setDoctorIdReady(false);
+    supabase.from('doctors').select('id').eq('user_id', user.id).maybeSingle()
+      .then(({ data }) => { setMyDoctorId(data?.id ?? null); setDoctorIdReady(true); });
+  }, [isDoctorRole, user?.id]);
 
   async function fetchData() {
     setLoading(true);
     let query = supabase.from('appointments').select('*, patient:patients(*), doctor:doctors(*)').order('appointment_date', { ascending: false }).order('appointment_time');
     if (filterDate) query = query.eq('appointment_date', filterDate);
+    if (isDoctorRole && myDoctorId) query = query.eq('doctor_id', myDoctorId);
     const { data } = await query;
     let filtered = (data || []) as unknown as Appointment[];
     if (debouncedSearch) {
@@ -281,8 +306,8 @@ export function AppointmentsPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Appointments</h1>
-          <p className="text-gray-500">Manage patient appointments</p>
+          <h1 className="text-2xl font-bold text-ink">Appointments</h1>
+          <p className="text-ink-muted">Manage patient appointments</p>
         </div>
         {isReceptionist() && (
           <button onClick={() => setShowModal(true)} className="btn-primary">
@@ -291,14 +316,16 @@ export function AppointmentsPage() {
         )}
       </div>
 
+      <TimelineSection appointments={appointments} filterDate={filterDate} isDoctorRole={isDoctorRole} myDoctorId={myDoctorId} showHeatmap={isReceptionist()} />
+
       <div className="card">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
           <div className="flex-1"><SearchInput value={search} onChange={setSearch} placeholder="Search appointments..." /></div>
           <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} className="input w-auto" />
-          {filterDate && <button onClick={() => setFilterDate('')} className="text-sm text-gray-500 hover:text-gray-700">Clear</button>}
+          {filterDate && <button onClick={() => setFilterDate('')} className="text-sm text-ink-muted hover:text-ink">Clear</button>}
         </div>
 
-        {loading ? <div className="py-12 text-center">Loading...</div> :
+        {loading ? <div className="py-12 text-center text-ink-muted">Loading...</div> :
         appointments.length === 0 ? <EmptyState title="No appointments found" /> : (
           <div className="mt-4 overflow-x-auto">
             <table className="w-full">
@@ -314,41 +341,41 @@ export function AppointmentsPage() {
               </thead>
               <tbody>
                 {appointments.map((a) => (
-                  <tr key={a.id} className="hover:bg-gray-50">
+                  <tr key={a.id} className="hover:bg-surface-muted">
                     <td className="table-cell">
-                      <div className="flex items-center gap-2">
-                        <User className="h-4 w-4 text-gray-400" />
+                      <div className="flex items-center gap-2 text-ink">
+                        <User className="h-4 w-4 text-ink-subtle" />
                         <span className="font-medium">{a.patient?.full_name}</span>
                       </div>
                     </td>
                     <td className="table-cell">
                       <div className="flex items-center gap-2">
-                        <Stethoscope className="h-4 w-4 text-gray-400" />
+                        <Stethoscope className="h-4 w-4 text-ink-subtle" />
                         Dr. {a.doctor?.full_name}
                       </div>
                     </td>
                     <td className="table-cell">{formatDate(a.appointment_date)}</td>
                     <td className="table-cell">{formatTime(a.appointment_time)}</td>
-                    <td className="table-cell"><span className={`badge ${getStatusColor(a.status)}`}>{a.status}</span></td>
+                    <td className="table-cell"><StatusBadge status={a.status} /></td>
                     <td className="table-cell text-right">
                       <div className="flex items-center justify-end gap-1">
                         {a.status === 'BOOKED' && isDoctor() && (
-                          <button onClick={() => openCompleteModal(a)} className="p-1.5 text-green-600 hover:bg-green-50 rounded" title="Complete">
+                          <button onClick={() => openCompleteModal(a)} className="p-1.5 text-success-fg hover:bg-success-bg rounded" title="Complete">
                             <CheckCircle className="h-4 w-4" />
                           </button>
                         )}
                         {a.status === 'BOOKED' && isReceptionist() && (
-                          <button onClick={() => openRescheduleModal(a)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded" title="Reschedule">
+                          <button onClick={() => openRescheduleModal(a)} className="p-1.5 text-info-fg hover:bg-info-bg rounded" title="Reschedule">
                             <RefreshCw className="h-4 w-4" />
                           </button>
                         )}
                         {a.status === 'BOOKED' && (
-                          <button onClick={() => updateStatus(a.id, 'CANCELLED')} className="p-1.5 text-red-600 hover:bg-red-50 rounded" title="Cancel">
+                          <button onClick={() => updateStatus(a.id, 'CANCELLED')} className="p-1.5 text-danger-fg hover:bg-danger-bg rounded" title="Cancel">
                             <XCircle className="h-4 w-4" />
                           </button>
                         )}
                         {a.status === 'BOOKED' && (
-                          <button onClick={() => updateStatus(a.id, 'NO_SHOW')} className="p-1.5 text-yellow-600 hover:bg-yellow-50 rounded" title="No Show">
+                          <button onClick={() => updateStatus(a.id, 'NO_SHOW')} className="p-1.5 text-caution-fg hover:bg-caution-bg rounded" title="No Show">
                             <AlertCircle className="h-4 w-4" />
                           </button>
                         )}
@@ -377,7 +404,7 @@ export function AppointmentsPage() {
               <option value="">All Departments</option>
               {departments.map(dep => <option key={dep.id} value={dep.id}>{dep.name}</option>)}
             </select>
-            {departments.length === 0 && <p className="mt-1 text-xs text-red-500">No departments found.</p>}
+            {departments.length === 0 && <p className="mt-1 text-xs text-danger-fg">No departments found.</p>}
           </div>
           <div>
             <label className="label">Doctor *</label>
@@ -385,9 +412,9 @@ export function AppointmentsPage() {
               <option value="">Select Doctor</option>
               {filteredDoctorsForBooking.map(d => <option key={d.id} value={d.id}>Dr. {d.full_name}</option>)}
             </select>
-            {doctors.length === 0 && <p className="mt-1 text-xs text-red-500">No doctors found. Add a doctor first.</p>}
+            {doctors.length === 0 && <p className="mt-1 text-xs text-danger-fg">No doctors found. Add a doctor first.</p>}
             {doctors.length > 0 && filteredDoctorsForBooking.length === 0 && (
-              <p className="mt-1 text-xs text-red-500">No doctors in this department.</p>
+              <p className="mt-1 text-xs text-danger-fg">No doctors in this department.</p>
             )}
           </div>
           <div>
@@ -401,14 +428,14 @@ export function AppointmentsPage() {
               {getSlotInfo().slots.map(t => <option key={t} value={t}>{formatTime(t)}</option>)}
             </select>
             {getSlotInfo().reason && (
-              <p className="mt-1 text-xs text-red-500">{getSlotInfo().reason}</p>
+              <p className="mt-1 text-xs text-danger-fg">{getSlotInfo().reason}</p>
             )}
           </div>
           <div>
             <label className="label">Notes</label>
             <textarea value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} className="input" rows={2} />
           </div>
-          {formError && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{formError}</p>}
+          {formError && <p className="text-sm text-danger-fg bg-danger-bg rounded-lg px-3 py-2">{formError}</p>}
           <div className="flex justify-end gap-3">
             <button type="button" onClick={() => { setShowModal(false); setFormError(''); }} className="btn-secondary">Cancel</button>
             <button type="submit" className="btn-primary">Book Appointment</button>
@@ -418,9 +445,9 @@ export function AppointmentsPage() {
 
       <Modal isOpen={showCompleteModal} onClose={() => setShowCompleteModal(false)} title="Complete Appointment">
         <div className="space-y-4">
-          <p className="text-sm text-gray-600">Complete consultation for <strong>{selectedAppointment?.patient?.full_name}</strong> with Dr. {selectedAppointment?.doctor?.full_name}?</p>
-          <p className="text-xs text-gray-500">This will automatically add a consultation charge (₹{selectedAppointment?.doctor?.consultation_fee}) to this patient's visit invoice.</p>
-          {completeError && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{completeError}</p>}
+          <p className="text-sm text-ink-muted">Complete consultation for <strong className="text-ink">{selectedAppointment?.patient?.full_name}</strong> with Dr. {selectedAppointment?.doctor?.full_name}?</p>
+          <p className="text-xs text-ink-subtle">This will automatically add a consultation charge (₹{selectedAppointment?.doctor?.consultation_fee}) to this patient's visit invoice.</p>
+          {completeError && <p className="text-sm text-danger-fg bg-danger-bg rounded-lg px-3 py-2">{completeError}</p>}
           <div className="flex justify-end gap-3">
             <button onClick={() => setShowCompleteModal(false)} className="btn-secondary">Cancel</button>
             <button disabled={completing} onClick={async () => {
@@ -437,8 +464,8 @@ export function AppointmentsPage() {
       </Modal>
       <Modal isOpen={showRescheduleModal} onClose={() => { setShowRescheduleModal(false); setRescheduleError(''); }} title="Reschedule Appointment">
         <form onSubmit={handleReschedule} className="space-y-4">
-          <p className="text-sm text-gray-600">
-            <strong>{selectedAppointment?.patient?.full_name}</strong> with Dr. {selectedAppointment?.doctor?.full_name}
+          <p className="text-sm text-ink-muted">
+            <strong className="text-ink">{selectedAppointment?.patient?.full_name}</strong> with Dr. {selectedAppointment?.doctor?.full_name}
           </p>
           <div>
             <label className="label">New Date *</label>
@@ -455,16 +482,66 @@ export function AppointmentsPage() {
               {getRescheduleSlotInfo().slots.map(t => <option key={t} value={t}>{formatTime(t)}</option>)}
             </select>
             {getRescheduleSlotInfo().reason && (
-              <p className="mt-1 text-xs text-red-500">{getRescheduleSlotInfo().reason}</p>
+              <p className="mt-1 text-xs text-danger-fg">{getRescheduleSlotInfo().reason}</p>
             )}
           </div>
-          {rescheduleError && <p className="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{rescheduleError}</p>}
+          {rescheduleError && <p className="text-sm text-danger-fg bg-danger-bg rounded-lg px-3 py-2">{rescheduleError}</p>}
           <div className="flex justify-end gap-3">
             <button type="button" onClick={() => { setShowRescheduleModal(false); setRescheduleError(''); }} className="btn-secondary">Cancel</button>
             <button type="submit" className="btn-primary">Reschedule</button>
           </div>
         </form>
       </Modal>
+    </div>
+  );
+}
+
+/**
+ * The day-timeline + (for admin/receptionist) busy-hours heatmap, shown
+ * above the appointments table. Follows whatever date the table is
+ * currently filtered to -- defaults to today when no filter is set, since
+ * `appointments` itself is unbounded in that case and we don't want the
+ * timeline rendering every date's appointments stacked on one axis.
+ */
+function TimelineSection({
+  appointments, filterDate, isDoctorRole, myDoctorId, showHeatmap,
+}: {
+  appointments: Appointment[];
+  filterDate: string;
+  isDoctorRole: boolean;
+  myDoctorId: string | null;
+  showHeatmap: boolean;
+}) {
+  const todayStr = new Date().toISOString().split('T')[0];
+  const displayDate = filterDate || todayStr;
+  // When no table filter is applied, `appointments` holds every date --
+  // narrow to the day we're displaying. When a filter IS applied,
+  // `appointments` already only contains that date, so no further
+  // narrowing is needed (or possible, since other dates were never fetched).
+  const dayAppointments = filterDate
+    ? appointments
+    : appointments.filter((a) => a.appointment_date === todayStr);
+
+  if (isDoctorRole && !myDoctorId) return null; // still resolving who "you" are
+
+  return (
+    <div className={`grid grid-cols-1 gap-4 ${showHeatmap ? 'lg:grid-cols-5' : ''}`}>
+      <div className={`card ${showHeatmap ? 'lg:col-span-3' : ''}`}>
+        <h2 className="mb-3 text-sm font-semibold text-ink">
+          {isDoctorRole ? 'Your schedule' : 'All doctors'} \u00b7 {displayDate === todayStr ? 'Today' : displayDate}
+        </h2>
+        <AppointmentTimeline
+          mode={isDoctorRole ? 'single' : 'multi'}
+          appointments={dayAppointments}
+          doctorLabel="You"
+        />
+      </div>
+      {showHeatmap && (
+        <div className="card lg:col-span-2">
+          <h2 className="mb-3 text-sm font-semibold text-ink">Busy hours</h2>
+          <BusyHoursHeatmap />
+        </div>
+      )}
     </div>
   );
 }

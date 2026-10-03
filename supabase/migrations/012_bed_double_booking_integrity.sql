@@ -5,4 +5,4 @@
 -- the DB the actual guard, not just the UI filter.
 CREATE UNIQUE INDEX IF NOT EXISTS one_active_admission_per_bed
   ON admissions (bed_id)
-  WHERE status = 'ADMITTED';
+  WHERE status = 'ADMITTED';

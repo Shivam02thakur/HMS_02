@@ -17,4 +17,4 @@
 
 UPDATE doctors
 SET full_name = regexp_replace(full_name, '^\s*Dr\.?\s+', '', 'i')
-WHERE full_name ~* '^\s*Dr\.?\s+';
+WHERE full_name ~* '^\s*Dr\.?\s+';
