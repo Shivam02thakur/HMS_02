@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
+import { ThemeProvider } from '@/contexts/ThemeContext';
 import { useRole } from '@/hooks/useRole';
 import { Layout } from '@/components/layout/Layout';
 import { LoginPage } from '@/pages/LoginPage';
@@ -14,6 +15,7 @@ import { PrescriptionsPage } from '@/pages/prescriptions/PrescriptionsPage';
 import { PrescriptionDetailPage } from '@/pages/prescriptions/PrescriptionDetailPage';
 import { PharmacyPage } from '@/pages/pharmacy/PharmacyPage';
 import { LaboratoryPage } from '@/pages/laboratory/LaboratoryPage';
+import { LabOrderDetailPage } from '@/pages/laboratory/LabOrderDetailPage';
 import { BillingPage } from '@/pages/billing/BillingPage';
 import { InvoiceDetailPage } from '@/pages/billing/InvoiceDetailPage';
 import { IPDPage } from '@/pages/ipd/IPDPage';
@@ -62,6 +64,7 @@ function AppRoutes() {
         <Route path="prescriptions/:id" element={<PrescriptionDetailPage />} />
         <Route path="pharmacy" element={<PharmacyPage />} />
         <Route path="laboratory" element={<LaboratoryPage />} />
+        <Route path="laboratory/:id" element={<LabOrderDetailPage />} />
         <Route path="billing" element={<BillingPage />} />
         <Route path="billing/:id" element={<InvoiceDetailPage />} />
         <Route path="ipd" element={<IPDPage />} />
@@ -83,11 +86,13 @@ function AppRoutes() {
 
 function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <BrowserRouter>
+          <AppRoutes />
+        </BrowserRouter>
+      </AuthProvider>
+    </ThemeProvider>
   );
 }
 

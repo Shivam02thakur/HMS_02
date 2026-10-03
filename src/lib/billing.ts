@@ -430,4 +430,4 @@ export async function billClosedWardSegment(admissionId: string, episodeInvoiceI
   if (calcErr) return calcErr.message;
 
   return null;
-}
+}

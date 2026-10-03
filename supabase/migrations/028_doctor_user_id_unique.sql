@@ -34,4 +34,4 @@ END $$;
 ALTER TABLE doctors DROP CONSTRAINT IF EXISTS doctors_user_id_key;
 ALTER TABLE doctors ADD CONSTRAINT doctors_user_id_key UNIQUE (user_id);
 
-NOTIFY pgrst, 'reload schema';
+NOTIFY pgrst, 'reload schema';

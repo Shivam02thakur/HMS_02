@@ -37,4 +37,4 @@ SET available_days = (
   )
   FROM unnest(available_days) AS day
 )
-WHERE available_days && ARRAY['MON','TUE','WED','THU','FRI','SAT','SUN'];
+WHERE available_days && ARRAY['MON','TUE','WED','THU','FRI','SAT','SUN'];

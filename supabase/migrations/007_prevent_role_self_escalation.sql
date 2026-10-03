@@ -39,4 +39,4 @@ DROP TRIGGER IF EXISTS trg_prevent_unauthorized_role_change ON profiles;
 CREATE TRIGGER trg_prevent_unauthorized_role_change
   BEFORE UPDATE ON profiles
   FOR EACH ROW
-  EXECUTE FUNCTION prevent_unauthorized_role_change();
+  EXECUTE FUNCTION prevent_unauthorized_role_change();

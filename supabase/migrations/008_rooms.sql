@@ -33,4 +33,4 @@ SET room_id = r.id
 FROM rooms r
 WHERE r.ward_id = b.ward_id AND r.room_number = 'R1';
 
-ALTER TABLE beds ALTER COLUMN room_id SET NOT NULL;
+ALTER TABLE beds ALTER COLUMN room_id SET NOT NULL;

@@ -57,7 +57,7 @@ export function ReauthModal({ isOpen, onClose, onVerified, email, title = 'Confi
         <div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-100">
           <ShieldAlert className="h-6 w-6 text-red-600" />
         </div>
-        <p className="text-sm text-gray-600">
+        <p className="text-sm text-ink-muted">
           {message || "This action can't be undone. Re-enter your password to confirm it's really you."}
         </p>
         <input
