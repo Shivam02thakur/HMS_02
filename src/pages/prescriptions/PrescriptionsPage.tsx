@@ -503,4 +503,4 @@ export function PrescriptionsPage() {
       </Modal>
     </div>
   );
-}
+}

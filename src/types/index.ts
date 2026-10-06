@@ -291,7 +291,7 @@ export interface LabResult {
   recorded_at: string;
 }
 
-export type InvoiceStatus = 'PENDING' | 'PARTIAL' | 'PAID';
+export type InvoiceStatus = 'PENDING' | 'PARTIAL' | 'PAID' | 'CANCELLED';
 
 export interface Invoice {
   id: string;
@@ -308,6 +308,9 @@ export interface Invoice {
   notes?: string | null;
   created_by?: string | null;
   created_at: string;
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
+  cancel_reason?: string | null;
   patient?: Patient;
   items?: InvoiceItem[];
   payments?: Payment[];
@@ -321,7 +324,7 @@ export interface InvoiceItem {
   quantity: number;
   unit_price: number;
   total_price: number;
-  item_type?: 'consultation' | 'lab_test' | 'medicine' | 'bed_charge' | 'other';
+  item_type?: 'consultation' | 'lab_test' | 'medicine' | 'procedure' | 'bed_charge' | 'other';
   reference_id?: string;
   dispensed?: boolean;
   // Links a medicine purchase back to the exact prescribed line it came
@@ -434,4 +437,4 @@ export interface CleaningLog {
   notes?: string | null;
   created_at: string;
   logged_by_profile?: { full_name: string };
-}
+}
