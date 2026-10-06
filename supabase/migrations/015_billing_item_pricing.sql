@@ -38,7 +38,6 @@ INSERT INTO procedures (name, category, price) VALUES
 ('IV Cannulation', 'Minor', 200),
 ('Nebulization', 'Minor', 250),
 ('ECG', 'Diagnostic', 400),
-('X-Ray (Single View)', 'Diagnostic', 600),
 ('Plaster Cast Application', 'Orthopedic', 1200),
 ('Catheterization', 'Minor', 700),
 ('Minor Surgical Procedure', 'Surgical', 3500),
@@ -61,4 +60,4 @@ END;
 ALTER TABLE invoice_items DROP CONSTRAINT IF EXISTS invoice_items_item_type_check;
 ALTER TABLE invoice_items ADD CONSTRAINT invoice_items_item_type_check
   CHECK (item_type IN ('consultation', 'lab_test', 'medicine', 'procedure', 'bed_charge', 'other'));
-  
+  

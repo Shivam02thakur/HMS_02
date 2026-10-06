@@ -1,17 +1,19 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRole } from '@/hooks/useRole';
 import { Modal } from '@/components/ui/Modal';
 import { SearchInput } from '@/components/ui/SearchInput';
 import { EmptyState } from '@/components/ui/EmptyState';
-import type { LabOrder, Patient, Doctor, LabTest, LabResult } from '@/types';
-import { Plus, FlaskConical, FileCheck, Clock, AlertCircle } from 'lucide-react';
-import { formatDate, getStatusColor } from '@/lib/utils';
+import type { LabOrder, LabOrderStatus, Patient, Doctor, LabTest } from '@/types';
+import { Plus, FlaskConical, FileCheck, FileText, AlertCircle } from 'lucide-react';
+import { formatDate, getStatusColor, getLabStatusLabel } from '@/lib/utils';
 import { useDebounce } from '@/hooks/useDebounce';
 import { findOrCreateEpisodeInvoice } from '@/lib/billing';
 
 export function LaboratoryPage() {
+  const navigate = useNavigate();
   const [labOrders, setLabOrders] = useState<LabOrder[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
@@ -73,7 +75,7 @@ export function LaboratoryPage() {
   async function fetchData() {
     setLoading(true);
     let query = supabase.from('lab_orders').select('*, patient:patients(full_name), doctor:doctors(full_name), test:lab_tests(*), result:lab_results(*)').order('ordered_at', { ascending: false });
-    if (filterStatus) query = query.eq('status', filterStatus as 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED');
+    if (filterStatus) query = query.eq('status', filterStatus as LabOrderStatus);
     const { data } = await query;
     let filtered = (data || []) as unknown as LabOrder[];
     if (debouncedSearch) {
@@ -210,8 +212,11 @@ export function LaboratoryPage() {
           <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="input w-auto">
             <option value="">All Status</option>
             <option value="PENDING">Pending</option>
+            <option value="SAMPLE_COLLECTED">Sample Collected</option>
+            <option value="PROCESSING">Processing</option>
+            <option value="RESULTS_ENTERED">Results Entered</option>
             <option value="IN_PROGRESS">In Progress</option>
-            <option value="COMPLETED">Completed</option>
+            <option value="COMPLETED">Finalized</option>
             <option value="CANCELLED">Cancelled</option>
           </select>
         </div>
@@ -233,10 +238,18 @@ export function LaboratoryPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
-                    <span className={`badge ${getStatusColor(order.status)}`}>{order.status}</span>
-                    {order.status === 'PENDING' && isLabTech() && (
-                      <button onClick={() => openResultModal(order)} className="btn-primary text-xs py-1.5 px-3">
+                    <span className={`badge ${getStatusColor(order.status)}`}>{getLabStatusLabel(order.status)}</span>
+                    {order.status === 'COMPLETED' ? (
+                      <button onClick={() => navigate(`/laboratory/${order.id}`)} className="btn-secondary text-xs py-1.5 px-3">
+                        <FileText className="h-3.5 w-3.5 mr-1" /> View / Print Report
+                      </button>
+                    ) : order.status !== 'CANCELLED' && isLabTech() ? (
+                      <button onClick={() => navigate(`/laboratory/${order.id}`)} className="btn-primary text-xs py-1.5 px-3">
                         <FileCheck className="h-3.5 w-3.5 mr-1" /> Enter Result
+                      </button>
+                    ) : (
+                      <button onClick={() => navigate(`/laboratory/${order.id}`)} className="btn-secondary text-xs py-1.5 px-3">
+                        <FileText className="h-3.5 w-3.5 mr-1" /> View
                       </button>
                     )}
                   </div>

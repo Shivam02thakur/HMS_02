@@ -22,4 +22,4 @@ FROM (VALUES
   ('Dr. Meera Pillai',    'meera.pillai@meridianhms.test',    '9800000010', 'General Medicine',  'Diabetology',                       500,  9, ARRAY['MON','WED','FRI'],             '10:00', '16:00')
 ) AS v(full_name, email, phone, department_name, specialization, consultation_fee, experience_years, available_days, available_time_start, available_time_end)
 JOIN departments d ON d.name = v.department_name
-ON CONFLICT (email) DO NOTHING;
+ON CONFLICT (email) DO NOTHING;

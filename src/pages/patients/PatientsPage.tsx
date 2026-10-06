@@ -147,8 +147,8 @@ export function PatientsPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Patients</h1>
-          <p className="text-gray-500">Manage patient records</p>
+          <h1 className="text-2xl font-bold text-ink">Patients</h1>
+          <p className="text-ink-muted">Manage patient records</p>
         </div>
         {isReceptionist() && (
           <button onClick={() => openModal()} className="btn-primary">
@@ -163,7 +163,7 @@ export function PatientsPage() {
         </div>
 
         {loading ? (
-          <div className="py-12 text-center">Loading patients...</div>
+          <div className="py-12 text-center text-ink-muted">Loading patients...</div>
         ) : patients.length === 0 ? (
           <EmptyState title="No patients found" description={search ? 'Try a different search term' : 'Register your first patient to get started'} action={isReceptionist() ? <button onClick={() => openModal()} className="btn-primary"><Plus className="h-4 w-4 mr-2" /> Register Patient</button> : undefined} />
         ) : (
@@ -182,38 +182,38 @@ export function PatientsPage() {
               </thead>
               <tbody>
                 {patients.map((p) => (
-                  <tr key={p.id} className="hover:bg-gray-50">
+                  <tr key={p.id} className="hover:bg-surface-muted">
                     <td className="table-cell">
                       <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-100">
-                          <User className="h-4 w-4 text-primary-600" />
+                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-100 dark:bg-primary-900/40">
+                          <User className="h-4 w-4 text-primary-600 dark:text-primary-300" />
                         </div>
-                        <span className="font-medium text-gray-900">{p.full_name}</span>
+                        <span className="font-medium text-ink">{p.full_name}</span>
                       </div>
                     </td>
                     <td className="table-cell font-mono text-xs">{p.patient_code}</td>
                     <td className="table-cell">
-                      <div className="flex items-center gap-1 text-gray-600">
+                      <div className="flex items-center gap-1 text-ink-muted">
                         <Phone className="h-3 w-3" />
                         {p.phone}
                       </div>
                     </td>
                     <td className="table-cell capitalize">{p.gender || '-'}</td>
                     <td className="table-cell">
-                      {p.blood_group ? <span className="badge bg-red-50 text-red-700">{p.blood_group}</span> : '-'}
+                      {p.blood_group ? <span className="badge bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300">{p.blood_group}</span> : '-'}
                     </td>
-                    <td className="table-cell text-gray-500">{p.created_at ? formatDate(p.created_at) : '-'}</td>
+                    <td className="table-cell text-ink-subtle">{p.created_at ? formatDate(p.created_at) : '-'}</td>
                     <td className="table-cell text-right">
                       <div className="flex items-center justify-end gap-2">
-                        <button onClick={() => navigate(`/patients/${p.id}`)} className="p-1 text-gray-400 hover:text-primary-600">
+                        <button onClick={() => navigate(`/patients/${p.id}`)} className="p-1 text-ink-subtle hover:text-primary-600">
                           <Eye className="h-4 w-4" />
                         </button>
                         {isReceptionist() && (
                           <>
-                            <button onClick={() => openModal(p)} className="p-1 text-gray-400 hover:text-blue-600">
+                            <button onClick={() => openModal(p)} className="p-1 text-ink-subtle hover:text-info-fg">
                               <Edit className="h-4 w-4" />
                             </button>
-                            <button onClick={() => handleDeleteClick(p)} className="p-1 text-gray-400 hover:text-red-600">
+                            <button onClick={() => handleDeleteClick(p)} className="p-1 text-ink-subtle hover:text-danger-fg">
                               <Trash2 className="h-4 w-4" />
                             </button>
                           </>
@@ -293,18 +293,18 @@ export function PatientsPage() {
       </Modal>
 
       {deleteError && (
-        <div className="fixed bottom-4 right-4 rounded-lg bg-red-50 px-4 py-2 text-sm text-red-700 shadow-lg">{deleteError}</div>
+        <div className="fixed bottom-4 right-4 rounded-lg bg-danger-bg px-4 py-2 text-sm text-danger-fg shadow-lg">{deleteError}</div>
       )}
 
       <Modal isOpen={!!deleteBlockedInfo} onClose={() => setDeleteBlockedInfo(null)} title="Can't Delete Patient" size="sm">
         <div className="space-y-4">
-          <p className="text-sm text-gray-600">
+          <p className="text-sm text-ink-muted">
             {deleteBlockedInfo?.patient.full_name} has dependent records that would be permanently erased:
           </p>
           <ul className="space-y-1 text-sm">
             {deleteBlockedInfo && Object.entries(deleteBlockedInfo.counts).filter(([, c]) => c > 0).map(([label, c]) => (
-              <li key={label} className="flex justify-between rounded bg-gray-50 px-3 py-1.5">
-                <span className="text-gray-700">{label}</span><span className="font-medium text-gray-900">{c}</span>
+              <li key={label} className="flex justify-between rounded bg-surface-muted px-3 py-1.5">
+                <span className="text-ink-muted">{label}</span><span className="font-medium text-ink">{c}</span>
               </li>
             ))}
           </ul>

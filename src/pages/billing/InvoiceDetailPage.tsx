@@ -1290,4 +1290,4 @@ function DropdownOption({ left, right, onSelect }: { left: string; right: string
       <span className="ml-3 flex-shrink-0 text-xs text-gray-400">{right}</span>
     </button>
   );
-}
+}

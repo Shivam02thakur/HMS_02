@@ -15,6 +15,7 @@ import { PrescriptionsPage } from '@/pages/prescriptions/PrescriptionsPage';
 import { PrescriptionDetailPage } from '@/pages/prescriptions/PrescriptionDetailPage';
 import { PharmacyPage } from '@/pages/pharmacy/PharmacyPage';
 import { LaboratoryPage } from '@/pages/laboratory/LaboratoryPage';
+import { LabOrderDetailPage } from '@/pages/laboratory/LabOrderDetailPage';
 import { BillingPage } from '@/pages/billing/BillingPage';
 import { InvoiceDetailPage } from '@/pages/billing/InvoiceDetailPage';
 import { IPDPage } from '@/pages/ipd/IPDPage';
@@ -63,6 +64,7 @@ function AppRoutes() {
         <Route path="prescriptions/:id" element={<PrescriptionDetailPage />} />
         <Route path="pharmacy" element={<PharmacyPage />} />
         <Route path="laboratory" element={<LaboratoryPage />} />
+        <Route path="laboratory/:id" element={<LabOrderDetailPage />} />
         <Route path="billing" element={<BillingPage />} />
         <Route path="billing/:id" element={<InvoiceDetailPage />} />
         <Route path="ipd" element={<IPDPage />} />

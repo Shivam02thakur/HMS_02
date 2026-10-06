@@ -54,6 +54,13 @@ export function getStatusColor(status: string): string {
     NO_SHOW: 'bg-yellow-100 text-yellow-800',
     PENDING: 'bg-yellow-100 text-yellow-800',
     IN_PROGRESS: 'bg-blue-100 text-blue-800',
+    SAMPLE_COLLECTED: 'bg-blue-100 text-blue-800',
+    PROCESSING: 'bg-indigo-100 text-indigo-800',
+    RESULTS_ENTERED: 'bg-purple-100 text-purple-800',
+    NORMAL: 'bg-green-100 text-green-800',
+    LOW: 'bg-orange-100 text-orange-800',
+    HIGH: 'bg-red-100 text-red-800',
+    ABNORMAL: 'bg-red-100 text-red-800',
     PAID: 'bg-green-100 text-green-800',
     PARTIAL: 'bg-orange-100 text-orange-800',
     ADMITTED: 'bg-red-100 text-red-800',
@@ -68,6 +75,19 @@ export function getStatusColor(status: string): string {
 export function getStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     PARTIAL: 'PARTIALLY PAID',
+  };
+  return labels[status] || status;
+}
+
+export function getLabStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    PENDING: 'Ordered',
+    SAMPLE_COLLECTED: 'Sample Collected',
+    PROCESSING: 'Processing',
+    RESULTS_ENTERED: 'Results Entered',
+    IN_PROGRESS: 'In Progress',
+    COMPLETED: 'Finalized',
+    CANCELLED: 'Cancelled',
   };
   return labels[status] || status;
 }

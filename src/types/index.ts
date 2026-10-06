@@ -234,7 +234,33 @@ export interface LabTest {
   default_abnormal_remark?: string | null;
 }
 
-export type LabOrderStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+export type LabOrderStatus =
+  | 'PENDING' | 'SAMPLE_COLLECTED' | 'PROCESSING' | 'RESULTS_ENTERED'
+  | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+
+export type LabResultFlag = 'NORMAL' | 'LOW' | 'HIGH' | 'ABNORMAL';
+
+export interface LabTestParameter {
+  id: string;
+  test_id: string;
+  name: string;
+  unit?: string | null;
+  reference_range?: string | null;
+  ref_low?: number | null;
+  ref_high?: number | null;
+  sort_order: number;
+}
+
+export interface LabResultValue {
+  id: string;
+  lab_order_id: string;
+  parameter_id: string;
+  result_value?: string | null;
+  flag?: LabResultFlag | null;
+  recorded_by?: string | null;
+  recorded_at: string;
+  parameter?: LabTestParameter;
+}
 
 export interface LabOrder {
   id: string;
@@ -247,10 +273,12 @@ export interface LabOrder {
   completed_at?: string;
   notes?: string;
   created_by?: string;
+  technician_id?: string | null;
   patient?: Patient;
   doctor?: Doctor;
   test?: LabTest;
   result?: LabResult;
+  technician?: { full_name: string } | null;
 }
 
 export interface LabResult {
@@ -406,4 +434,4 @@ export interface CleaningLog {
   notes?: string | null;
   created_at: string;
   logged_by_profile?: { full_name: string };
-}
+}

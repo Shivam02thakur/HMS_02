@@ -58,7 +58,6 @@ SELECT * FROM (VALUES
   ('IV Cannulation', 'Minor', 200),
   ('Nebulization', 'Minor', 250),
   ('ECG', 'Diagnostic', 400),
-  ('X-Ray (Single View)', 'Diagnostic', 600),
   ('Plaster Cast Application', 'Orthopedic', 1200),
   ('Catheterization', 'Minor', 700),
   ('Minor Surgical Procedure', 'Surgical', 3500),
@@ -73,4 +72,4 @@ ALTER TABLE invoice_items DROP CONSTRAINT IF EXISTS invoice_items_item_type_chec
 ALTER TABLE invoice_items ADD CONSTRAINT invoice_items_item_type_check
   CHECK (item_type IN ('consultation', 'lab_test', 'medicine', 'procedure', 'bed_charge', 'other'));
 
-NOTIFY pgrst, 'reload schema';
+NOTIFY pgrst, 'reload schema';
